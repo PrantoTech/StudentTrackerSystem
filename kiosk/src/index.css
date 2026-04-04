@@ -1,0 +1,304 @@
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  font-family: "Segoe UI", Arial, sans-serif;
+}
+
+body {
+  background: #ffffff;
+  color: #111111;
+}
+
+.app-root {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  transition: background-color 0.25s ease, color 0.25s ease;
+}
+
+.kiosk-stage {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2rem;
+}
+
+.mode-toggle {
+  display: flex;
+  justify-content: center;
+  gap: 1rem;
+  padding: 1rem;
+  border-bottom: 1px solid #ececec;
+  background: #fafafa;
+}
+
+.mode-btn {
+  border: 2px solid #cbcbcb;
+  background: #ffffff;
+  color: #111111;
+  border-radius: 12px;
+  font-size: 1.3rem;
+  font-weight: 700;
+  padding: 0.8rem 1.4rem;
+  cursor: pointer;
+}
+
+.mode-btn.active {
+  background: #1f6fff;
+  border-color: #1f6fff;
+  color: #ffffff;
+}
+
+.arrival-screen,
+.scanner-screen,
+.result-screen {
+  width: 100%;
+  min-height: calc(100vh - 88px);
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  text-align: center;
+  padding: 1.5rem;
+}
+
+.headline {
+  font-size: clamp(2.2rem, 4vw, 4.2rem);
+  margin: 0.5rem 0;
+  letter-spacing: 0.04em;
+}
+
+.subline {
+  font-size: clamp(1.1rem, 2vw, 1.9rem);
+  margin: 0;
+  color: #444444;
+}
+
+.qr-shell {
+  margin-top: 2rem;
+  background: #ffffff;
+  border: 3px solid #111111;
+  border-radius: 20px;
+  padding: 1.25rem;
+}
+
+.arrival-actions {
+  margin-top: 2rem;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1rem;
+  width: min(100%, 420px);
+}
+
+.arrival-label {
+  font-size: 1.2rem;
+  font-weight: 700;
+  align-self: flex-start;
+}
+
+.arrival-select {
+  width: 100%;
+  font-size: 1.35rem;
+  padding: 0.75rem 1rem;
+  border: 3px solid #111111;
+  border-radius: 12px;
+  background: #ffffff;
+  cursor: pointer;
+}
+
+.arrival-submit {
+  width: 100%;
+  margin-top: 0.5rem;
+  font-size: 1.35rem;
+  font-weight: 800;
+  padding: 0.9rem 1.25rem;
+  border: none;
+  border-radius: 12px;
+  background: #1f6fff;
+  color: #ffffff;
+  cursor: pointer;
+}
+
+.arrival-submit:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.scanner-view {
+  width: min(80vw, 560px);
+  aspect-ratio: 1 / 1;
+  margin-top: 1.8rem;
+  border: 4px solid #111111;
+  border-radius: 20px;
+  overflow: hidden;
+  background: #000000;
+  display: block;
+  max-width: min(80vw, 560px);
+}
+
+.scanner-view > .html5-qrcode {
+  width: 100% !important;
+  height: 100% !important;
+}
+
+.scanner-view video,
+.scanner-view canvas,
+.scanner-view .html5-qrcode-camera__camera {
+  width: 100% !important;
+  height: 100% !important;
+  object-fit: cover;
+}
+
+.scanner-status,
+.camera-error {
+  margin-top: 1.2rem;
+  font-size: 1.4rem;
+  font-weight: 700;
+}
+
+.camera-error {
+  color: #b50000;
+}
+
+.tone-success {
+  background: #12a547;
+  color: #ffffff;
+}
+
+.tone-error {
+  background: #cf1f1f;
+  color: #ffffff;
+}
+
+.tone-success .mode-toggle,
+.tone-error .mode-toggle {
+  background: transparent;
+  border-bottom-color: rgba(255, 255, 255, 0.22);
+}
+
+.tone-success .mode-btn,
+.tone-error .mode-btn {
+  border-color: rgba(255, 255, 255, 0.55);
+  background: transparent;
+  color: #ffffff;
+}
+
+.tone-success .mode-btn.active,
+.tone-error .mode-btn.active {
+  background: rgba(255, 255, 255, 0.22);
+  border-color: #ffffff;
+}
+
+.result-title {
+  font-size: clamp(3rem, 8vw, 6rem);
+  margin: 0;
+  letter-spacing: 0.05em;
+}
+
+.result-message {
+  margin-top: 1rem;
+  font-size: clamp(1.7rem, 3.5vw, 3rem);
+  font-weight: 700;
+}
+
+.result-subline {
+  margin-top: 0.5rem;
+  font-size: clamp(1.2rem, 2.5vw, 2rem);
+  font-weight: 600;
+  opacity: 0.9;
+}
+
+.departure-panel {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.departure-tabs {
+  display: flex;
+  gap: 0.75rem;
+  margin-bottom: 1.25rem;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+.departure-tab {
+  border: 2px solid #cbcbcb;
+  background: #ffffff;
+  color: #111111;
+  border-radius: 12px;
+  font-size: 1.1rem;
+  font-weight: 700;
+  padding: 0.65rem 1.2rem;
+  cursor: pointer;
+}
+
+.departure-tab.active {
+  background: #111111;
+  border-color: #111111;
+  color: #ffffff;
+}
+
+.pin-pickup-screen {
+  width: 100%;
+  min-height: calc(100vh - 88px);
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  text-align: center;
+  padding: 1.5rem;
+}
+
+.pin-section-title {
+  font-size: clamp(1.8rem, 3.5vw, 3rem);
+  margin: 0 0 0.25rem;
+  letter-spacing: 0.04em;
+}
+
+.pin-form {
+  margin-top: 1.5rem;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.75rem;
+  width: min(100%, 420px);
+}
+
+.pin-input {
+  width: 100%;
+  font-size: 2rem;
+  font-weight: 800;
+  letter-spacing: 0.35em;
+  text-align: center;
+  padding: 0.85rem 1rem;
+  border: 3px solid #111111;
+  border-radius: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.pin-input::placeholder {
+  letter-spacing: 0.2em;
+  opacity: 0.35;
+}
+
+.pin-hint {
+  margin: 0;
+  font-size: 1.05rem;
+  font-weight: 600;
+  color: #444444;
+}
+
+.pin-hint.error {
+  color: #b50000;
+}
