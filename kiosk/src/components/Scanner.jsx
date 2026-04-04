@@ -25,6 +25,7 @@ function verifyDepartureUrl(studentId, token) {
  */
 function Scanner({ loading, setLoading, onResult }) {
   const scannerRef = useRef(null);
+  const warningTimerRef = useRef(null);
   /**
    * True after first decode is accepted until this Scanner instance unmounts.
    * Prevents duplicate verify calls if the library delivers extra callbacks after stop().
@@ -33,6 +34,7 @@ function Scanner({ loading, setLoading, onResult }) {
   /** Always points at latest handler so the camera effect does not restart on every render. */
   const handleScanRef = useRef(null);
   const [cameraError, setCameraError] = useState("");
+  const [scanWarning, setScanWarning] = useState(false);
 
   const stopScanner = useCallback(async () => {
     const scanner = scannerRef.current;
@@ -70,6 +72,10 @@ function Scanner({ loading, setLoading, onResult }) {
         return;
       }
       processingRef.current = true;
+      setScanWarning(false);
+      if (warningTimerRef.current) {
+        window.clearTimeout(warningTimerRef.current);
+      }
       setLoading(true);
 
       try {
@@ -164,6 +170,18 @@ function Scanner({ loading, setLoading, onResult }) {
             if (run) {
               void run(decodedText);
             }
+          },
+          () => {
+            if (processingRef.current) {
+              return;
+            }
+            setScanWarning(true);
+            if (warningTimerRef.current) {
+              window.clearTimeout(warningTimerRef.current);
+            }
+            warningTimerRef.current = window.setTimeout(() => {
+              setScanWarning(false);
+            }, 700);
           }
         );
       } catch {
@@ -178,22 +196,31 @@ function Scanner({ loading, setLoading, onResult }) {
 
     return () => {
       cancelled = true;
+      if (warningTimerRef.current) {
+        window.clearTimeout(warningTimerRef.current);
+      }
       stopScanner();
     };
   }, [setLoading, stopScanner]);
 
   return (
     <section className="scanner-screen">
-      <h1 className="headline">SCAN PARENT QR</h1>
-      <p className="subline">Align the QR code inside the box to verify pickup</p>
+      <p className="subline scanner-top-note">
+        Align the QR code inside the frame to verify pickup.
+      </p>
 
       {cameraError ? (
-        <p className="camera-error">{cameraError}</p>
+        <div className="notice-card error">
+          <p className="camera-error">{cameraError}</p>
+        </div>
       ) : (
-        <div id={SCANNER_ID} className="scanner-view" />
+        <div className={`scanner-shell ${scanWarning ? "scan-warning" : ""}`}>
+          <div id={SCANNER_ID} className="scanner-view" />
+          <div className="scanner-warning-glow" aria-hidden="true" />
+        </div>
       )}
 
-      {loading ? <p className="scanner-status">Verifying...</p> : null}
+      {loading ? <p className="scanner-loading">Verifying...</p> : null}
     </section>
   );
 }

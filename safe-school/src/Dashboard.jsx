@@ -33,7 +33,28 @@ function Dashboard() {
   const [pickupPin, setPickupPin] = useState(null)
   const [pickupPinExpiresAt, setPickupPinExpiresAt] = useState(null)
   const [pinGenerating, setPinGenerating] = useState(false)
+  const [faceProfileSaving, setFaceProfileSaving] = useState(false)
   const pinExpiryTimerRef = useRef(null)
+
+  const resolveFaceUrl = (studentLike) => {
+    const keys = [
+      'face_image_url',
+      'face_url',
+      'faceImageUrl',
+      'face_photo_url',
+      'photo_url',
+      'profile_image_url',
+      'avatar_url',
+      'image_url',
+      'photo',
+      'image',
+    ]
+    for (const key of keys) {
+      const value = studentLike?.[key]
+      if (typeof value === 'string' && value.trim()) return value.trim()
+    }
+    return ''
+  }
 
   const clearPickupPin = useCallback(() => {
     setPickupPin(null)
@@ -68,12 +89,43 @@ function Dashboard() {
         // Support backend spelling `departured_at`; also accept `departed_at` if ever used.
         const departedAt =
           data?.departured_at ?? data?.departed_at ?? data?.student?.departured_at ?? data?.student?.departed_at ?? null
+        const faceUrl = resolveFaceUrl(data) || resolveFaceUrl(data?.student)
+        const faceVerified = Boolean(
+          data?.face_verified ||
+          data?.faceVerified ||
+          data?.is_face_verified ||
+          data?.isFaceVerified ||
+          data?.face_verified_at ||
+          data?.faceVerifiedAt ||
+          data?.face_profile_verified_at ||
+          data?.faceProfileVerifiedAt ||
+          data?.student?.face_verified ||
+          data?.student?.faceVerified ||
+          data?.student?.is_face_verified ||
+          data?.student?.isFaceVerified ||
+          data?.student?.face_verified_at ||
+          data?.student?.faceVerifiedAt ||
+          data?.student?.face_profile_verified_at ||
+          data?.student?.faceProfileVerifiedAt
+        )
 
         setStudent({
           id: studentId,
           name: nextName,
           arrived_at: arrivedAt,
           departured_at: departedAt,
+          face_url: faceUrl,
+          face_verified: faceVerified,
+          face_verified_at:
+            data?.face_verified_at ||
+            data?.faceVerifiedAt ||
+            data?.face_profile_verified_at ||
+            data?.faceProfileVerifiedAt ||
+            data?.student?.face_verified_at ||
+            data?.student?.faceVerifiedAt ||
+            data?.student?.face_profile_verified_at ||
+            data?.student?.faceProfileVerifiedAt ||
+            null,
         })
         setStatus(nextStatus)
 
@@ -182,6 +234,128 @@ function Dashboard() {
     setScanning(false)
   }, [verifyingGate])
 
+  const updateFaceProfile = useCallback(async ({ clear = false, imageUrl = '' } = {}) => {
+    const studentId = user?.student_id
+    if (!studentId) return
+
+    if (!clear && !String(imageUrl || '').trim()) {
+      alert('Face image is required.')
+      return
+    }
+
+    setFaceProfileSaving(true)
+    setError('')
+    try {
+      const payload = clear ? { clear: true } : { imageDataUrl: String(imageUrl).trim() }
+      const routes = [
+        '/admin/register-face/' + encodeURIComponent(studentId),
+        '/parent/register-face/' + encodeURIComponent(studentId),
+        '/register-face/' + encodeURIComponent(studentId),
+      ]
+
+      let lastError = null
+      for (const route of routes) {
+        try {
+          await apiFetch(route, {
+            method: 'POST',
+            body: JSON.stringify(payload),
+          }, { onUnauthorized: handleUnauthorized })
+          lastError = null
+          break
+        } catch (routeError) {
+          if (routeError?.status !== 404) {
+            throw routeError
+          }
+          lastError = routeError
+        }
+      }
+
+      if (lastError) {
+        throw lastError
+      }
+
+      await fetchStudent(true)
+      alert(clear ? 'Face profile removed' : 'Face profile saved')
+    } catch (e) {
+      const message =
+        e?.status === 401
+          ? 'Session expired. Please login again.'
+          : e?.message || 'Could not update face profile.'
+      if (e?.status !== 401) alert(message)
+      setError(message)
+    } finally {
+      setFaceProfileSaving(false)
+    }
+  }, [user?.student_id, fetchStudent, handleUnauthorized])
+
+  const pickImageAsDataUrl = () => new Promise((resolve, reject) => {
+    const input = document.createElement('input')
+    input.type = 'file'
+    input.accept = 'image/*'
+    input.onchange = () => {
+      const file = input.files?.[0]
+      if (!file) {
+        resolve(null)
+        return
+      }
+      const reader = new FileReader()
+      reader.onload = () => resolve(typeof reader.result === 'string' ? reader.result : null)
+      reader.onerror = () => reject(new Error('Could not read selected image file.'))
+      reader.readAsDataURL(file)
+    }
+    input.click()
+  })
+
+  const compressDataUrlImage = (inputDataUrl) => new Promise((resolve, reject) => {
+    const image = new Image()
+    image.onload = () => {
+      try {
+        const maxSide = 720
+        const scale = Math.min(1, maxSide / Math.max(image.width, image.height))
+        const width = Math.max(1, Math.round(image.width * scale))
+        const height = Math.max(1, Math.round(image.height * scale))
+
+        const canvas = document.createElement('canvas')
+        canvas.width = width
+        canvas.height = height
+        const context = canvas.getContext('2d')
+        if (!context) {
+          reject(new Error('Could not process selected image.'))
+          return
+        }
+
+        context.drawImage(image, 0, 0, width, height)
+        const compressed = canvas.toDataURL('image/jpeg', 0.72)
+        resolve(compressed)
+      } catch {
+        reject(new Error('Could not process selected image.'))
+      }
+    }
+    image.onerror = () => reject(new Error('Invalid image file.'))
+    image.src = inputDataUrl
+  })
+
+  const handleSetFaceProfile = useCallback(() => {
+    void (async () => {
+      try {
+        const imageDataUrl = await pickImageAsDataUrl()
+        if (!imageDataUrl) return
+        const compressed = await compressDataUrlImage(imageDataUrl)
+        if (typeof compressed !== 'string' || !compressed.trim()) {
+          alert('Could not process selected image.')
+          return
+        }
+        void updateFaceProfile({ clear: false, imageUrl: compressed })
+      } catch (e) {
+        alert(e?.message || 'Could not process selected image.')
+      }
+    })()
+  }, [updateFaceProfile])
+
+  const handleClearFaceProfile = useCallback(() => {
+    void updateFaceProfile({ clear: true })
+  }, [updateFaceProfile])
+
   const handleLogout = () => {
     logout()
     navigate('/login', { replace: true })
@@ -255,6 +429,11 @@ function Dashboard() {
             pickupPin={pickupPin}
             pinGenerating={pinGenerating}
             onGeneratePickupPin={generatePickupPin}
+            faceProfileSaving={faceProfileSaving}
+            faceProfileRegistered={Boolean(student?.face_url || student?.face_verified)}
+            faceProfileVerified={Boolean(student?.face_verified)}
+            onSetFaceProfile={handleSetFaceProfile}
+            onClearFaceProfile={handleClearFaceProfile}
           />
         ) : (
           <p className="hint">Loading student…</p>

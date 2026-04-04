@@ -11,14 +11,36 @@ interface Student {
   departed_at?: string | null
   token?: string | null
   pickup_pin?: string | number | null
+  verification_type?: string | null
+  face_image_url?: string | null
+  face_url?: string | null
+  faceImageUrl?: string | null
+  face_photo_url?: string | null
+  photo_url?: string | null
+  profile_image_url?: string | null
+  avatar_url?: string | null
+  image_url?: string | null
+  photo?: string | null
+  image?: string | null
+  face_verified?: boolean | null
+  faceVerified?: boolean | null
+  is_face_verified?: boolean | null
+  isFaceVerified?: boolean | null
+  face_verified_at?: string | null
+  faceVerifiedAt?: string | null
+  face_profile_verified_at?: string | null
+  faceProfileVerifiedAt?: string | null
 }
 
 interface StudentTableProps {
   students: Student[]
   onForceDepart: (studentId: string) => void
   onReset: (studentId: string) => void
+  onSetFaceProfile: (student: Student) => void
+  onClearFaceProfile: (studentId: string) => void
   forceDepartLoadingId: string | null
   resetStudentLoadingId: string | null
+  faceProfileLoadingId: string | null
   pageSize?: number
 }
 
@@ -31,6 +53,7 @@ const statusBadgeConfig = {
 const verificationBadgeConfig = {
   QR: { label: 'QR', className: 'badge-qr' },
   PIN: { label: 'PIN', className: 'badge-pin' },
+  FACE: { label: 'Face', className: 'badge-face' },
   Unknown: { label: 'Unknown', className: 'badge-unknown' },
 }
 
@@ -38,8 +61,11 @@ export function StudentTable({
   students,
   onForceDepart,
   onReset,
+  onSetFaceProfile,
+  onClearFaceProfile,
   forceDepartLoadingId,
   resetStudentLoadingId,
+  faceProfileLoadingId,
   pageSize = 8,
 }: StudentTableProps) {
   const [page, setPage] = useState(1)
@@ -67,9 +93,43 @@ export function StudentTable({
   }
 
   const getVerificationType = (student: Student): keyof typeof verificationBadgeConfig => {
+    if (String(student.verification_type || '').toUpperCase() === 'FACE') return 'FACE'
     if (student.token != null && String(student.token).trim() !== '') return 'QR'
     if (student.pickup_pin != null && String(student.pickup_pin).trim() !== '') return 'PIN'
     return 'Unknown'
+  }
+
+  const isFaceProfileVerified = (student: Student) => {
+    return Boolean(
+      student.face_verified ||
+      student.faceVerified ||
+      student.is_face_verified ||
+      student.isFaceVerified ||
+      student.face_verified_at ||
+      student.faceVerifiedAt ||
+      student.face_profile_verified_at ||
+      student.faceProfileVerifiedAt
+    )
+  }
+
+  const getFaceProfileUrl = (student: Student) => {
+    const keys: Array<keyof Student> = [
+      'face_image_url',
+      'face_url',
+      'faceImageUrl',
+      'face_photo_url',
+      'photo_url',
+      'profile_image_url',
+      'avatar_url',
+      'image_url',
+      'photo',
+      'image',
+    ]
+    for (const key of keys) {
+      const value = student[key]
+      if (typeof value === 'string' && value.trim() !== '') return value.trim()
+    }
+    return ''
   }
 
   return (
@@ -83,6 +143,7 @@ export function StudentTable({
               <th>Arrival Time</th>
               <th>Departure Time</th>
               <th>Verification Type</th>
+              <th>Face Profile</th>
               <th>Actions</th>
             </tr>
           </thead>
@@ -108,7 +169,42 @@ export function StudentTable({
                   })()}
                 </td>
                 <td>
+                  {(() => {
+                    const faceUrl = getFaceProfileUrl(student)
+                    const verified = isFaceProfileVerified(student)
+                    return (
+                      <span className={`admin-badge ${verified ? 'badge-arrived' : faceUrl ? 'badge-pin' : 'badge-not_arrived'}`}>
+                        {verified ? 'Verified' : faceUrl ? 'Registered' : 'Missing'}
+                      </span>
+                    )
+                  })()}
+                </td>
+                <td>
                   <div className="admin-tbl-actions">
+                    <button
+                      className="btn-reset"
+                      onClick={() => onSetFaceProfile(student)}
+                      title="Set Face Profile"
+                      disabled={
+                        faceProfileLoadingId === student.id ||
+                        forceDepartLoadingId === student.id ||
+                        resetStudentLoadingId === student.id
+                      }
+                    >
+                      {faceProfileLoadingId === student.id ? 'Working…' : 'Upload Face'}
+                    </button>
+                    <button
+                      className="btn-reset"
+                      onClick={() => onClearFaceProfile(student.id)}
+                      title="Clear Face Profile"
+                      disabled={
+                        faceProfileLoadingId === student.id ||
+                        forceDepartLoadingId === student.id ||
+                        resetStudentLoadingId === student.id
+                      }
+                    >
+                      {faceProfileLoadingId === student.id ? 'Working…' : 'Clear Face'}
+                    </button>
                     <button
                       className="btn-depart"
                       onClick={() => onForceDepart(student.id)}
@@ -133,7 +229,7 @@ export function StudentTable({
             ))}
             {students.length === 0 && (
               <tr>
-                <td colSpan={6} style={{ textAlign: 'center', color: '#6b7280' }}>
+                <td colSpan={7} style={{ textAlign: 'center', color: '#6b7280' }}>
                   No students found matching current filters.
                 </td>
               </tr>

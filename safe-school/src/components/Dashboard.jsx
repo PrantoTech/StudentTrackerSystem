@@ -15,13 +15,30 @@ const STATUS_COLORS = {
 
 function formatLocalTime(iso) {
   if (iso == null || iso === '') return null
-  try {
-    const d = new Date(iso)
-    if (Number.isNaN(d.getTime())) return null
-    return d.toLocaleTimeString()
-  } catch {
-    return null
+
+  const raw = String(iso).trim()
+  if (!raw) return null
+
+  const candidates = [
+    raw,
+    // Some browsers fail on "YYYY-MM-DD HH:mm:ss"; convert to ISO-like form.
+    raw.includes(' ') ? raw.replace(' ', 'T') : raw,
+  ]
+
+  for (const candidate of candidates) {
+    try {
+      const d = new Date(candidate)
+      if (!Number.isNaN(d.getTime())) {
+        return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+      }
+    } catch {
+      // Continue trying fallbacks.
+    }
   }
+
+  // Final fallback: extract clock part if present, so UI still shows time text.
+  const match = raw.match(/\b\d{1,2}:\d{2}(?::\d{2})?\b/)
+  return match ? match[0] : null
 }
 
 /**
@@ -44,6 +61,11 @@ function Dashboard({
   pickupPin,
   pinGenerating,
   onGeneratePickupPin,
+  faceProfileSaving,
+  faceProfileRegistered,
+  faceProfileVerified,
+  onSetFaceProfile,
+  onClearFaceProfile,
 }) {
   const canScanGate = status === STATUS.NOT_ARRIVED
   const canUsePickupPin = status === STATUS.ARRIVED
@@ -51,44 +73,60 @@ function Dashboard({
   const departedAt = selectedStudent?.departured_at
   const arrivalDisplay = formatLocalTime(arrivedAt)
   const departureDisplay = formatLocalTime(departedAt)
+  const studentInitial = (selectedStudent?.name || 'S').trim().charAt(0).toUpperCase()
+  const showTracker = status !== STATUS.NOT_ARRIVED
+  const arrivalDone = status === STATUS.ARRIVED || status === STATUS.DEPARTED
+  const departureDone = status === STATUS.DEPARTED
+
+  let trackNote = ''
+  if (status === STATUS.ARRIVED) trackNote = 'Student arrived at gate'
+  if (status === STATUS.DEPARTED) trackNote = 'Student departed successfully'
 
   return (
     <div className="dashboard">
-      <div className="block">
-        <h2 className="student-name">{selectedStudent.name}</h2>
-        <p className={`status-badge ${STATUS_COLORS[status] || 'status-red'}`}>{status}</p>
-        <p className="hint status-label">Current status</p>
+      <div className="dashboard-hero block">
+        <div className="student-avatar" aria-hidden>
+          {studentInitial}
+        </div>
 
-        <div className="timestamp-block">
-          {status === STATUS.NOT_ARRIVED ? (
-            <p className="timestamp-not-yet">Not yet arrived</p>
-          ) : null}
-
-          {status === STATUS.ARRIVED && arrivalDisplay ? (
-            <p className="timestamp-row timestamp-arrival">
-              <span className="timestamp-label">Arrival Time:</span>{' '}
-              <span className="timestamp-value">{arrivalDisplay}</span>
-            </p>
-          ) : null}
-
-          {status === STATUS.DEPARTED ? (
-            <>
-              {arrivalDisplay ? (
-                <p className="timestamp-row timestamp-arrival">
-                  <span className="timestamp-label">Arrival Time:</span>{' '}
-                  <span className="timestamp-value">{arrivalDisplay}</span>
-                </p>
-              ) : null}
-              {departureDisplay ? (
-                <p className="timestamp-row timestamp-departure">
-                  <span className="timestamp-label">Departure Time:</span>{' '}
-                  <span className="timestamp-value">{departureDisplay}</span>
-                </p>
-              ) : null}
-            </>
-          ) : null}
+        <div className="dashboard-hero-copy">
+          <p className="dashboard-kicker">Assigned student</p>
+          <h2 className="student-name">{selectedStudent.name}</h2>
+          <p className="hint status-label">Current status</p>
+          <p className={`status-badge ${STATUS_COLORS[status] || 'status-red'}`}>{status}</p>
         </div>
       </div>
+
+      {showTracker ? (
+        <div className="order-track-card block">
+          <div className="order-track-head">
+            <p className="track-title">Student Tracking</p>
+            <p className="track-note">{trackNote}</p>
+          </div>
+
+          <div className="order-track">
+            <article className={`track-step ${arrivalDone ? 'done' : 'active'}`}>
+              <span className="track-dot" aria-hidden />
+              <div className="track-body">
+                <p className="track-time-inline">
+                  Arrival{arrivalDisplay ? `, ${arrivalDisplay}` : ''}
+                </p>
+              </div>
+            </article>
+
+            <span className={`track-line ${departureDone ? 'done' : ''}`} aria-hidden />
+
+            <article className={`track-step ${departureDone ? 'done' : 'pending'}`}>
+              <span className="track-dot" aria-hidden />
+              <div className="track-body">
+                <p className="track-time-inline">
+                  Departure{departureDisplay ? `, ${departureDisplay}` : ''}
+                </p>
+              </div>
+            </article>
+          </div>
+        </div>
+      ) : null}
 
       <div className="block actions">
         <button
@@ -109,12 +147,32 @@ function Dashboard({
         </button>
         <button
           type="button"
+          className="secondary-btn"
+          onClick={onSetFaceProfile}
+          disabled={loading || scanning || verifyingGate || faceProfileSaving}
+        >
+          {faceProfileSaving ? 'Uploading…' : 'Upload Face Photo'}
+        </button>
+        <button
+          type="button"
+          className="tertiary-btn"
+          onClick={onClearFaceProfile}
+          disabled={loading || scanning || verifyingGate || faceProfileSaving || !faceProfileRegistered}
+        >
+          {faceProfileSaving ? 'Working…' : 'Clear Face Profile'}
+        </button>
+        <button
+          type="button"
           className="tertiary-btn"
           onClick={onLogout}
           disabled={scanning || verifyingGate}
         >
           Logout
         </button>
+        <p className="actions-note">
+          Face Profile: {faceProfileVerified ? 'Verified' : faceProfileRegistered ? 'Registered' : 'Missing'} | Use
+          refresh if gate status does not update immediately.
+        </p>
       </div>
 
       {scanning ? (

@@ -47,20 +47,31 @@ function App() {
 
   return (
     <div className={`app-root ${resultTone ? `tone-${resultTone}` : ""}`}>
-      <ModeToggle mode={mode} onChange={setMode} />
+      <div className="ambient ambient-one" aria-hidden="true" />
+      <div className="ambient ambient-two" aria-hidden="true" />
 
-      <main className="kiosk-stage">
-        {mode === MODE.ARRIVAL ? (
-          <ArrivalPanel />
-        ) : (
-          <DeparturePanel
-            loading={loading}
-            setLoading={setLoading}
-            scanResult={scanResult}
-            setScanResult={setScanResult}
-          />
-        )}
-      </main>
+      <div className="app-shell">
+        <ModeToggle mode={mode} onChange={setMode} />
+
+        <main className="kiosk-stage">
+          <section className="stage-card">
+            {mode === MODE.ARRIVAL ? (
+              <ArrivalPanel />
+            ) : (
+              <DeparturePanel
+                loading={loading}
+                setLoading={setLoading}
+                scanResult={scanResult}
+                setScanResult={setScanResult}
+              />
+            )}
+          </section>
+        </main>
+
+        <footer className="kiosk-footer">
+          Copyright 2026 Rakshyn. All rights reserved.
+        </footer>
+      </div>
     </div>
   );
 }

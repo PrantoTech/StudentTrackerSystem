@@ -35,44 +35,52 @@ function ResultScreen({ result }) {
 
   return (
     <section className={`result-screen ${result.type}`}>
-      {isSuccess ? (
-        isArrival ? (
-          <>
-            <h1 className="result-title">✅ Student Checked In</h1>
-            <p className="result-message">{result.studentName}</p>
-          </>
-        ) : isDeparturePin ? (
-          <>
-            <h1 className="result-title">Verified</h1>
-            <p className="result-message">Student departed</p>
-            {result.studentName ? (
-              <p className="result-subline">{result.studentName}</p>
-            ) : null}
-          </>
-        ) : (
-          <>
-            <h1 className="result-title">✅ VERIFIED</h1>
-            <p className="result-message">
-              {result.studentName} has departed
-            </p>
-          </>
-        )
-      ) : (
-        <>
-          {isDeparturePin ? (
-            <h1 className="result-title">
-              {result.message || "Invalid PIN"}
-            </h1>
+      <div className="result-card">
+        <div className="result-mark" aria-hidden="true">
+          {isSuccess ? "✓" : "!"}
+        </div>
+
+        {isSuccess ? (
+          isArrival ? (
+            <>
+              <p className="section-pill success">Check-in complete</p>
+              <h1 className="result-title">Student Checked In</h1>
+              <p className="result-message">{result.studentName}</p>
+            </>
+          ) : isDeparturePin ? (
+            <>
+              <p className="section-pill success">Pickup verified</p>
+              <h1 className="result-title">Verified</h1>
+              <p className="result-message">Student departed</p>
+              {result.studentName ? (
+                <p className="result-subline">{result.studentName}</p>
+              ) : null}
+            </>
           ) : (
             <>
-              <h1 className="result-title">❌ INVALID</h1>
+              <p className="section-pill success">Pickup verified</p>
+              <h1 className="result-title">Verified</h1>
               <p className="result-message">
-                {result.message || "QR invalid or already used"}
+                {result.studentName} has departed
               </p>
             </>
-          )}
-        </>
-      )}
+          )
+        ) : (
+          <>
+            <p className="section-pill error">Verification failed</p>
+            {isDeparturePin ? (
+              <h1 className="result-title">{result.message || "Invalid PIN"}</h1>
+            ) : (
+              <>
+                <h1 className="result-title">Invalid QR</h1>
+                <p className="result-message">
+                  {result.message || "QR invalid or already used"}
+                </p>
+              </>
+            )}
+          </>
+        )}
+      </div>
     </section>
   );
 }

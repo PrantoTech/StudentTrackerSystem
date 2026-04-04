@@ -78,8 +78,10 @@ function PinPickupPanel({ loading, setLoading, onResult }) {
 
   return (
     <section className="pin-pickup-screen">
-      <h2 className="pin-section-title">Enter Pickup PIN</h2>
-      <p className="subline">Enter the 6-digit code to verify pickup</p>
+      <div className="panel-intro compact">
+        <h2 className="pin-section-title">Enter Pickup PIN</h2>
+        <p className="subline">Enter the 6-digit code to verify pickup.</p>
+      </div>
 
       <div className="pin-form">
         <label className="arrival-label" htmlFor="pickup-pin">

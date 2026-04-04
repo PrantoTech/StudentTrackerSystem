@@ -302,3 +302,104 @@ body {
 .pin-hint.error {
   color: #b50000;
 }
+
+.face-pickup-screen {
+  width: 100%;
+  min-height: calc(100vh - 88px);
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  text-align: center;
+  padding: 1.5rem;
+}
+
+.face-camera-wrap {
+  position: relative;
+  margin-top: 1.3rem;
+}
+
+.face-camera-shell {
+  width: min(84vw, 560px);
+  aspect-ratio: 4 / 3;
+  border: 4px solid #111111;
+  border-radius: 20px;
+  overflow: hidden;
+  background: #000000;
+}
+
+.face-auto-popup {
+  position: absolute;
+  left: 50%;
+  top: -0.8rem;
+  transform: translate(-50%, -100%);
+  margin: 0;
+  padding: 0.5rem 0.85rem;
+  border-radius: 12px;
+  border: 2px solid #1f6fff;
+  background: #eaf2ff;
+  color: #0f3f8f;
+  font-size: 0.95rem;
+  font-weight: 700;
+  width: max-content;
+  max-width: min(84vw, 520px);
+  box-shadow: 0 10px 20px rgba(17, 17, 17, 0.16);
+  pointer-events: none;
+}
+
+.face-auto-popup.visible {
+  opacity: 1;
+  animation: facePopupIn 220ms ease-out both;
+}
+
+.face-auto-popup.hidden {
+  opacity: 0;
+  animation: facePopupOut 180ms ease-in both;
+}
+
+@keyframes facePopupIn {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -92%);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, -100%);
+  }
+}
+
+@keyframes facePopupOut {
+  from {
+    opacity: 1;
+    transform: translate(-50%, -100%);
+  }
+  to {
+    opacity: 0;
+    transform: translate(-50%, -92%);
+  }
+}
+
+.face-video {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: cover;
+}
+
+.face-status {
+  margin-top: 1rem;
+  margin-bottom: 0.75rem;
+  font-size: 1.05rem;
+  font-weight: 600;
+  color: #333333;
+}
+
+.face-match-pill {
+  margin: 0 0 0.8rem;
+  padding: 0.45rem 0.85rem;
+  border-radius: 999px;
+  border: 2px solid #1f6fff;
+  color: #1f6fff;
+  font-size: 0.95rem;
+  font-weight: 700;
+}

@@ -21,6 +21,13 @@ function DeparturePanel({ loading, setLoading, scanResult, setScanResult }) {
 
   return (
     <div className="departure-panel">
+      <div className="panel-intro">
+        <h2 className="headline">Verify Pickup</h2>
+        <p className="subline">
+          Use QR or a 6-digit pickup PIN to release a student.
+        </p>
+      </div>
+
       <div className="departure-tabs" role="tablist" aria-label="Departure method">
         <button
           type="button"

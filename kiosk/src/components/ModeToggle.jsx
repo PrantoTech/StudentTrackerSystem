@@ -1,6 +1,7 @@
 function ModeToggle({ mode, onChange }) {
   return (
     <header className="mode-toggle">
+      <span className="mode-toggle-label">Switch desk mode</span>
       <button
         type="button"
         className={`mode-btn ${mode === "ARRIVAL" ? "active" : ""}`}

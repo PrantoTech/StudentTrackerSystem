@@ -20,6 +20,7 @@ export default function Dashboard() {
   const [filterStatus, setFilterStatus] = useState('ALL')
   const [forceDepartLoadingId, setForceDepartLoadingId] = useState(null)
   const [resetStudentLoadingId, setResetStudentLoadingId] = useState(null)
+  const [faceProfileLoadingId, setFaceProfileLoadingId] = useState(null)
   const [resetSystemLoading, setResetSystemLoading] = useState(false)
   const [logoutLoading, setLogoutLoading] = useState(false)
 
@@ -83,6 +84,143 @@ export default function Dashboard() {
       alert(e?.message || 'Action failed')
     } finally {
       setResetStudentLoadingId(null)
+    }
+  }
+
+  const readFaceUrl = (student) => {
+    const keys = [
+      'face_image_url',
+      'face_url',
+      'faceImageUrl',
+      'face_photo_url',
+      'photo_url',
+      'profile_image_url',
+      'avatar_url',
+      'image_url',
+      'photo',
+      'image',
+    ]
+    for (const key of keys) {
+      const value = student?.[key]
+      if (typeof value === 'string' && value.trim()) return value.trim()
+    }
+    return ''
+  }
+
+  const postFaceProfile = async (studentId, payload) => {
+    const routes = [
+      `${BASE_URL}/admin/register-face/${encodeURIComponent(studentId)}`,
+      `${BASE_URL}/parent/register-face/${encodeURIComponent(studentId)}`,
+      `${BASE_URL}/register-face/${encodeURIComponent(studentId)}`,
+    ]
+
+    let lastNotFound = null
+    for (const route of routes) {
+      const res = await fetch(route, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      })
+      const data = await res.json().catch(() => null)
+      if (res.ok) return data
+      if (res.status === 404) {
+        lastNotFound = new Error(data?.error || 'Route not found')
+        continue
+      }
+      throw new Error(data?.error || 'Request failed')
+    }
+
+    throw lastNotFound || new Error('Face registration route not found')
+  }
+
+  const handleSetFaceProfile = async (student) => {
+    if (!student?.id) return
+
+    const pickImageAsDataUrl = () => new Promise((resolve, reject) => {
+      const input = document.createElement('input')
+      input.type = 'file'
+      input.accept = 'image/*'
+      input.onchange = () => {
+        const file = input.files?.[0]
+        if (!file) {
+          resolve(null)
+          return
+        }
+        const reader = new FileReader()
+        reader.onload = () => resolve(typeof reader.result === 'string' ? reader.result : null)
+        reader.onerror = () => reject(new Error('Could not read selected image file.'))
+        reader.readAsDataURL(file)
+      }
+      input.click()
+    })
+
+    const compressDataUrlImage = (inputDataUrl) => new Promise((resolve, reject) => {
+      const image = new Image()
+      image.onload = () => {
+        try {
+          const maxSide = 720
+          const scale = Math.min(1, maxSide / Math.max(image.width, image.height))
+          const width = Math.max(1, Math.round(image.width * scale))
+          const height = Math.max(1, Math.round(image.height * scale))
+
+          const canvas = document.createElement('canvas')
+          canvas.width = width
+          canvas.height = height
+          const context = canvas.getContext('2d')
+          if (!context) {
+            reject(new Error('Could not process selected image file.'))
+            return
+          }
+
+          context.drawImage(image, 0, 0, width, height)
+          const compressed = canvas.toDataURL('image/jpeg', 0.72)
+          resolve(compressed)
+        } catch {
+          reject(new Error('Could not process selected image file.'))
+        }
+      }
+      image.onerror = () => reject(new Error('Invalid image file.'))
+      image.src = inputDataUrl
+    })
+
+    let imageDataUrl = ''
+    try {
+      const picked = await pickImageAsDataUrl()
+      if (!picked) return
+      const compressed = await compressDataUrlImage(String(picked))
+      imageDataUrl = String(compressed).trim()
+      if (!imageDataUrl) {
+        alert('Selected image is invalid. Try another photo.')
+        return
+      }
+    } catch (e) {
+      alert(e?.message || 'Could not process selected image.')
+      return
+    }
+
+    try {
+      setFaceProfileLoadingId(student.id)
+      await postFaceProfile(student.id, { imageDataUrl })
+      await fetchStudents()
+      alert('Face photo uploaded')
+    } catch (e) {
+      alert(e?.message || 'Action failed')
+    } finally {
+      setFaceProfileLoadingId(null)
+    }
+  }
+
+  const handleClearFaceProfile = async (studentId) => {
+    if (!studentId) return
+    try {
+      setFaceProfileLoadingId(studentId)
+      await postFaceProfile(studentId, { clear: true })
+      await fetchStudents()
+      alert('Face profile removed')
+    } catch (e) {
+      alert(e?.message || 'Action failed')
+    } finally {
+      setFaceProfileLoadingId(null)
     }
   }
 
@@ -218,8 +356,11 @@ export default function Dashboard() {
               students={filteredStudents}
               onForceDepart={handleForceDepart}
               onReset={handleReset}
+              onSetFaceProfile={handleSetFaceProfile}
+              onClearFaceProfile={handleClearFaceProfile}
               forceDepartLoadingId={forceDepartLoadingId}
               resetStudentLoadingId={resetStudentLoadingId}
+              faceProfileLoadingId={faceProfileLoadingId}
             />
             <p className="hint">
               Showing {filteredStudents.length} of {students.length} students
