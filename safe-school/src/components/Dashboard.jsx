@@ -1,6 +1,4 @@
 import { useState } from 'react'
-import DepartureQR from './DepartureQR'
-import QRScanner from './QRScanner'
 
 const STATUS = {
   NOT_ARRIVED: 'NOT_ARRIVED',
@@ -43,22 +41,15 @@ function formatLocalTime(iso) {
 }
 
 /**
- * Dashboard view: status from backend, gate QR scan to authorize check-in, then departure QR.
+ * Dashboard view: status, refresh controls, departure requests, and pickup PIN.
  */
 function Dashboard({
   selectedStudent,
   accountType,
   loggedInParentId,
   status,
-  token,
-  scanning,
-  verifyingGate,
   loading,
   error,
-  checkInSuccess,
-  onOpenGateScan,
-  onCancelGateScan,
-  onGateCheckIn,
   onRefreshStatus,
   onLogout,
   pickupPin,
@@ -72,7 +63,6 @@ function Dashboard({
 }) {
   const isStudentAccount = accountType === 'student'
   const [parentIdValue, setParentIdValue] = useState(() => String(loggedInParentId || ''))
-  const canScanGate = status === STATUS.NOT_ARRIVED
   const canUsePickupPin = status === STATUS.ARRIVED
   const arrivedAt = selectedStudent?.arrived_at
   const departedAt = selectedStudent?.departured_at
@@ -140,17 +130,9 @@ function Dashboard({
       <div className="block actions">
         <button
           type="button"
-          className="primary-btn"
-          onClick={onOpenGateScan}
-          disabled={loading || !canScanGate || scanning || verifyingGate}
-        >
-          Scan Gate QR to Check-In
-        </button>
-        <button
-          type="button"
           className="secondary-btn"
           onClick={onRefreshStatus}
-          disabled={loading || scanning}
+          disabled={loading}
         >
           Refresh Status
         </button>
@@ -158,7 +140,7 @@ function Dashboard({
           type="button"
           className="tertiary-btn"
           onClick={onLogout}
-          disabled={scanning || verifyingGate}
+          disabled={loading}
         >
           Logout
         </button>
@@ -168,22 +150,6 @@ function Dashboard({
           </p>
         ) : null}
       </div>
-
-      {scanning ? (
-        <QRScanner
-          active={scanning}
-          isVerifying={verifyingGate}
-          onValidated={onGateCheckIn}
-          onCancel={onCancelGateScan}
-          disabled={!canScanGate}
-        />
-      ) : null}
-
-      {checkInSuccess ? (
-        <p className="success-banner" role="status">
-          Checked In Successfully
-        </p>
-      ) : null}
 
       {pendingDepartureRequest ? (
         <div className="block pin-panel">
@@ -230,7 +196,7 @@ function Dashboard({
             type="button"
             className="secondary-btn pin-generate-btn"
             onClick={onGeneratePickupPin}
-            disabled={loading || scanning || verifyingGate || pinGenerating}
+            disabled={loading || pinGenerating}
           >
             {pinGenerating ? 'Generating…' : 'Generate Pickup PIN'}
           </button>
@@ -246,8 +212,6 @@ function Dashboard({
           ) : null}
         </div>
       ) : null}
-
-      <DepartureQR studentId={selectedStudent.id} token={token} />
 
       {error ? <p className="error-text">{error}</p> : null}
     </div>

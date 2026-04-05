@@ -294,12 +294,6 @@
   border-color: rgba(120, 172, 255, 0.3);
 }
 
-.badge-qr {
-  color: #f2ddff;
-  background: rgba(198, 132, 252, 0.24);
-  border-color: rgba(198, 132, 252, 0.36);
-}
-
 .badge-pin {
   color: #ffe2f5;
   background: rgba(244, 114, 182, 0.24);

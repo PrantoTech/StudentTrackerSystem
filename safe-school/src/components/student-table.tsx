@@ -54,7 +54,6 @@ const statusBadgeConfig = {
 }
 
 const verificationBadgeConfig = {
-  QR: { label: 'QR', className: 'badge-qr' },
   PIN: { label: 'PIN', className: 'badge-pin' },
   FACE: { label: 'Face', className: 'badge-face' },
   Unknown: { label: 'Unknown', className: 'badge-unknown' },
@@ -96,7 +95,6 @@ export function StudentTable({
 
   const getVerificationType = (student: Student): keyof typeof verificationBadgeConfig => {
     if (String(student.verification_type || '').toUpperCase() === 'FACE') return 'FACE'
-    if (student.token != null && String(student.token).trim() !== '') return 'QR'
     if (student.pickup_pin != null && String(student.pickup_pin).trim() !== '') return 'PIN'
     return 'Unknown'
   }
