@@ -516,13 +516,25 @@ select {
   color: #b9d0ff;
   font-size: 0.9rem;
   font-weight: 700;
-  text-align: center;
-  margin-top: 2px;
+  text-align: left;
+  margin-top: 0;
   cursor: pointer;
 }
 
 .link-btn:hover {
   color: #d9e7ff;
+}
+
+.form-meta-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 2px;
+}
+
+.form-meta-row .link-btn:last-child {
+  text-align: right;
 }
 
 .forgot-form {
@@ -531,6 +543,42 @@ select {
   border-radius: var(--radius-md);
   border: 1px solid rgba(120, 172, 255, 0.24);
   background: rgba(120, 172, 255, 0.08);
+}
+
+.register-form {
+  margin-top: 14px;
+  padding: 16px;
+  border-radius: var(--radius-md);
+  border: 1px solid rgba(46, 208, 129, 0.28);
+  background: rgba(46, 208, 129, 0.08);
+}
+
+.register-type-row {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.register-type-btn {
+  min-height: 42px;
+  border-radius: 10px;
+  border: 1px solid rgba(172, 198, 235, 0.28);
+  background: rgba(255, 255, 255, 0.06);
+  color: #d7e8ff;
+  font-weight: 700;
+  cursor: pointer;
+  transition: transform 0.16s ease, background-color 0.16s ease, border-color 0.16s ease;
+}
+
+.register-type-btn:hover {
+  transform: translateY(-1px);
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.register-type-btn.active {
+  border-color: rgba(46, 208, 129, 0.64);
+  background: rgba(46, 208, 129, 0.24);
+  color: #e6fff3;
 }
 
 .forgot-title {
@@ -590,6 +638,13 @@ select {
   color: #b9cbe5;
   font-size: 0.94rem;
   font-weight: 600;
+}
+
+.departure-request-actions {
+  margin-top: 14px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
 }
 
 .qr-panel {
@@ -760,6 +815,10 @@ select {
   }
 
   .dashboard-stats {
+    grid-template-columns: 1fr;
+  }
+
+  .register-type-row {
     grid-template-columns: 1fr;
   }
 }

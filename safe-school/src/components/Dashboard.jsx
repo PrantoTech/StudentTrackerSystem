@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import DepartureQR from './DepartureQR'
 import QRScanner from './QRScanner'
 
@@ -42,10 +43,12 @@ function formatLocalTime(iso) {
 }
 
 /**
- * Parent dashboard: status from backend, gate QR scan to authorize check-in, then departure QR.
+ * Dashboard view: status from backend, gate QR scan to authorize check-in, then departure QR.
  */
 function Dashboard({
   selectedStudent,
+  accountType,
+  loggedInParentId,
   status,
   token,
   scanning,
@@ -61,12 +64,14 @@ function Dashboard({
   pickupPin,
   pinGenerating,
   onGeneratePickupPin,
-  faceProfileSaving,
-  faceProfileRegistered,
   faceProfileVerified,
-  onSetFaceProfile,
-  onClearFaceProfile,
+  pendingDepartureRequest,
+  departureRequestBusy,
+  onApproveDepartureRequest,
+  onRejectDepartureRequest,
 }) {
+  const isStudentAccount = accountType === 'student'
+  const [parentIdValue, setParentIdValue] = useState(() => String(loggedInParentId || ''))
   const canScanGate = status === STATUS.NOT_ARRIVED
   const canUsePickupPin = status === STATUS.ARRIVED
   const arrivedAt = selectedStudent?.arrived_at
@@ -77,6 +82,7 @@ function Dashboard({
   const showTracker = status !== STATUS.NOT_ARRIVED
   const arrivalDone = status === STATUS.ARRIVED || status === STATUS.DEPARTED
   const departureDone = status === STATUS.DEPARTED
+  const requiresParentIdForDeparture = Boolean(pendingDepartureRequest?.requires_parent_id)
 
   let trackNote = ''
   if (status === STATUS.ARRIVED) trackNote = 'Student arrived at gate'
@@ -92,6 +98,9 @@ function Dashboard({
         <div className="dashboard-hero-copy">
           <p className="dashboard-kicker">Assigned student</p>
           <h2 className="student-name">{selectedStudent.name}</h2>
+          <p className="hint status-label">
+            Student ID: {selectedStudent.id} | Parent ID: {selectedStudent.parent_id || loggedInParentId || '-'}
+          </p>
           <p className="hint status-label">Current status</p>
           <p className={`status-badge ${STATUS_COLORS[status] || 'status-red'}`}>{status}</p>
         </div>
@@ -147,32 +156,17 @@ function Dashboard({
         </button>
         <button
           type="button"
-          className="secondary-btn"
-          onClick={onSetFaceProfile}
-          disabled={loading || scanning || verifyingGate || faceProfileSaving}
-        >
-          {faceProfileSaving ? 'Uploading…' : 'Upload Face Photo'}
-        </button>
-        <button
-          type="button"
-          className="tertiary-btn"
-          onClick={onClearFaceProfile}
-          disabled={loading || scanning || verifyingGate || faceProfileSaving || !faceProfileRegistered}
-        >
-          {faceProfileSaving ? 'Working…' : 'Clear Face Profile'}
-        </button>
-        <button
-          type="button"
           className="tertiary-btn"
           onClick={onLogout}
           disabled={scanning || verifyingGate}
         >
           Logout
         </button>
-        <p className="actions-note">
-          Face Profile: {faceProfileVerified ? 'Verified' : faceProfileRegistered ? 'Registered' : 'Missing'} | Use
-          refresh if gate status does not update immediately.
-        </p>
+        {!isStudentAccount ? (
+          <p className="actions-note">
+            Face Profile: {faceProfileVerified ? 'Verified' : 'Missing'} | Use refresh if gate status does not update immediately.
+          </p>
+        ) : null}
       </div>
 
       {scanning ? (
@@ -191,7 +185,46 @@ function Dashboard({
         </p>
       ) : null}
 
-      {canUsePickupPin ? (
+      {pendingDepartureRequest ? (
+        <div className="block pin-panel">
+          <p className="pin-display-label">Departure request notification</p>
+          <p className="pin-warning">
+            Kiosk requested departure verification for {pendingDepartureRequest.student_name || selectedStudent.name}.
+          </p>
+          {!isStudentAccount && requiresParentIdForDeparture ? (
+            <label className="field" style={{ marginTop: '0.75rem' }}>
+              <span className="field-label">Parent ID verification</span>
+              <input
+                className="input"
+                type="text"
+                value={parentIdValue}
+                onChange={(event) => setParentIdValue(event.target.value)}
+                placeholder="Enter parent ID"
+              />
+            </label>
+          ) : null}
+          <div className="departure-request-actions">
+            <button
+              type="button"
+              className="primary-btn"
+              disabled={departureRequestBusy || (requiresParentIdForDeparture && !String(parentIdValue || '').trim())}
+              onClick={() => onApproveDepartureRequest(parentIdValue)}
+            >
+              {departureRequestBusy ? 'Processing…' : 'Approve Departure'}
+            </button>
+            <button
+              type="button"
+              className="tertiary-btn"
+              disabled={departureRequestBusy}
+              onClick={onRejectDepartureRequest}
+            >
+              Reject
+            </button>
+          </div>
+        </div>
+      ) : null}
+
+      {canUsePickupPin && !isStudentAccount ? (
         <div className="block pin-panel">
           <button
             type="button"

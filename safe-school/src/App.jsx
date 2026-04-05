@@ -42,7 +42,7 @@ function App() {
       <Route
         path="/dashboard"
         element={
-          <ProtectedRoute allow={['parent']}>
+          <ProtectedRoute allow={['parent', 'student']}>
             <Dashboard />
           </ProtectedRoute>
         }

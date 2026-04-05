@@ -1,245 +1,617 @@
 const express = require("express");
 const cors = require("cors");
-const fs = require("fs");
-const path = require("path");
-const { createClient } = require("@supabase/supabase-js");
+const { randomUUID } = require("crypto");
+const { MongoClient } = require("mongodb");
 const { getLocalIP } = require("./utils/network");
 
 const app = express();
 const PORT = 3000;
-const SUPABASE_URL =
-  process.env.SUPABASE_URL || "https://yurrdolffqsvkzwihhgo.supabase.co";
-const SUPABASE_KEY =
-  process.env.SUPABASE_ANON_KEY ||
-  "sb_publishable_Y5_5drrwfyxjFsWn9laEkw_5cYwbI2J";
 
-/*
------------------------------------
-MIDDLEWARE
------------------------------------
-*/
+const MONGODB_URI = process.env.MONGODB_URI || process.env.MONGO_URL || "mongodb://127.0.0.1:27017";
+const MONGODB_DB_NAME = process.env.MONGODB_DB || process.env.MONGO_DB || "student_tracker";
+const mongoClient = new MongoClient(MONGODB_URI);
+let mongoDatabasePromise = null;
+
+const PIN_EXPIRY_MS = 10 * 60 * 1000;
+
+const RFID_FIELDS = [
+  "card_id",
+  "card_uid",
+  "rfid_uid",
+  "nfc_uid",
+  "tap_card_id",
+  "student_card_id",
+  "student_number",
+];
 
 app.use(cors());
-app.use(express.json({ limit: "20mb" }));
-app.use(express.urlencoded({ extended: true, limit: "20mb" }));
+app.use(express.json({ limit: "1mb" }));
 
-app.use((err, req, res, next) => {
-  if (err && err.type === "entity.too.large") {
-    return res.status(413).json({ error: "Uploaded image is too large. Please use a smaller photo." });
-  }
-  if (err instanceof SyntaxError && err.status === 400 && "body" in err) {
-    return res.status(400).json({ error: "Invalid JSON payload" });
-  }
-  return next(err);
-});
-
-// Configuration endpoint for dynamic base URL
 app.get("/config", (req, res) => {
   const ip = getLocalIP() || "localhost";
-  res.json({
-    baseUrl: `http://${ip}:${PORT}`,
-    supabaseUrl: SUPABASE_URL,
-  });
+  res.json({ baseUrl: `http://${ip}:${PORT}`, database: "mongodb", mongoDatabase: MONGODB_DB_NAME });
 });
 
-// Debug middleware
-app.use((req, res, next) => {
-  console.log(`➡️ ${req.method} ${req.url}`, req.body || "");
-  next();
+app.get("/health", (_req, res) => {
+  res.json({ ok: true });
 });
 
-/*
------------------------------------
-SUPABASE CONFIG
------------------------------------
-*/
-
-const supabase = createClient(
-  SUPABASE_URL,
-  SUPABASE_KEY
-);
-
-const FACE_IMAGE_FIELDS = [
-  "face_image_url",
-  "face_url",
-  "faceImageUrl",
-  "face_photo_url",
-  "photo_url",
-  "profile_image_url",
-  "avatar_url",
-  "image_url",
-  "photo",
-  "image",
-];
-
-const FACE_VERIFIED_FIELDS = [
-  "face_verified",
-  "faceVerified",
-  "is_face_verified",
-  "isFaceVerified",
-];
-
-const FACE_VERIFIED_AT_FIELDS = [
-  "face_verified_at",
-  "faceVerifiedAt",
-  "face_profile_verified_at",
-  "faceProfileVerifiedAt",
-  "verified_at",
-  "verifiedAt",
-];
-
-const MAX_UPLOAD_IMAGE_BYTES = 10 * 1024 * 1024;
-const FACE_PROFILE_STORE_PATH = path.join(__dirname, "face-profiles.json");
-
-function estimateDataUrlImageBytes(dataUrl) {
-  if (!dataUrl || typeof dataUrl !== "string") return 0;
-  const commaIndex = dataUrl.indexOf(",");
-  if (commaIndex < 0) return 0;
-  const b64 = dataUrl.slice(commaIndex + 1).replace(/\s/g, "");
-  if (!b64) return 0;
-  const padding = (b64.match(/=+$/) || [""])[0].length;
-  return Math.floor((b64.length * 3) / 4) - padding;
+function normalize(value) {
+  return String(value || "").trim();
 }
 
-function readFaceProfileStore() {
-  try {
-    if (!fs.existsSync(FACE_PROFILE_STORE_PATH)) {
-      return {};
+function parseStudentCardPair(rawValue) {
+  const value = normalize(rawValue);
+  const separatorIndex = value.indexOf(":");
+
+  if (separatorIndex <= 0 || separatorIndex === value.length - 1) {
+    return null;
+  }
+
+  const studentId = value.slice(0, separatorIndex).trim();
+  const cardId = value.slice(separatorIndex + 1).trim();
+
+  if (!studentId || !cardId) {
+    return null;
+  }
+
+  return { studentId, cardId };
+}
+
+function toPlainObject(doc) {
+  if (!doc) return null;
+  const { _id, ...rest } = doc;
+  return rest;
+}
+
+function valuesMatch(left, right) {
+  return normalize(left) === normalize(right);
+}
+
+async function getMongoDatabase() {
+  if (!mongoDatabasePromise) {
+    mongoDatabasePromise = mongoClient.connect().then((client) => client.db(MONGODB_DB_NAME));
+  }
+
+  return mongoDatabasePromise;
+}
+
+async function getMongoCollection(name) {
+  const database = await getMongoDatabase();
+  return database.collection(name);
+}
+
+async function readCollectionDocuments(name) {
+  const collection = await getMongoCollection(name);
+  return collection.find({}).toArray();
+}
+
+function filterDocuments(documents, filters) {
+  return documents.filter((doc) =>
+    filters.every((filter) => {
+      const currentValue = doc?.[filter.field];
+      if (filter.op === "eq") {
+        return valuesMatch(currentValue, filter.value);
+      }
+      return !valuesMatch(currentValue, filter.value);
+    }),
+  );
+}
+
+function createCollectionQueryBuilder(collectionName) {
+  const state = {
+    operation: "select",
+    filters: [],
+    updateData: null,
+    insertData: null,
+    returnRows: false,
+  };
+
+  const builder = {
+    select() {
+      state.returnRows = true;
+      return builder;
+    },
+    eq(field, value) {
+      state.filters.push({ field, op: "eq", value });
+      return builder;
+    },
+    neq(field, value) {
+      state.filters.push({ field, op: "neq", value });
+      return builder;
+    },
+    update(data) {
+      state.operation = "update";
+      state.updateData = data;
+      return builder;
+    },
+    insert(data) {
+      state.operation = "insert";
+      state.insertData = data;
+      return builder;
+    },
+    async maybeSingle() {
+      const result = await execute();
+      return { data: result[0] || null, error: null };
+    },
+    async single() {
+      const result = await execute();
+
+      if (result.length === 1) {
+        return { data: result[0], error: null };
+      }
+
+      if (result.length === 0) {
+        return { data: null, error: new Error(`No documents found in ${collectionName}`) };
+      }
+
+      return { data: null, error: new Error(`Multiple documents found in ${collectionName}`) };
+    },
+    then(resolve, reject) {
+      return execute().then(resolve, reject);
+    },
+  };
+
+  async function execute() {
+    const collection = await getMongoCollection(collectionName);
+
+    if (state.operation === "insert") {
+      const payload = Array.isArray(state.insertData) ? state.insertData : [state.insertData];
+      const documents = payload.map((item) => ({ ...item }));
+      await collection.insertMany(documents);
+      return state.returnRows ? documents.map(toPlainObject) : [];
     }
-    const raw = fs.readFileSync(FACE_PROFILE_STORE_PATH, "utf8");
-    const parsed = raw ? JSON.parse(raw) : {};
-    return parsed && typeof parsed === "object" ? parsed : {};
-  } catch {
-    return {};
+
+    const documents = await readCollectionDocuments(collectionName);
+    const matchedDocuments = filterDocuments(documents, state.filters);
+    const filteredDocuments = matchedDocuments.map(toPlainObject);
+
+    if (state.operation === "update") {
+      if (matchedDocuments.length === 0) {
+        return [];
+      }
+
+      const updateData = { ...state.updateData };
+      await Promise.all(
+        matchedDocuments.map((doc) => collection.updateOne({ _id: doc._id }, { $set: updateData })),
+      );
+
+      if (!state.returnRows) {
+        return [];
+      }
+
+      return matchedDocuments.map((doc) => toPlainObject({ ...doc, ...updateData }));
+    }
+
+    return filteredDocuments;
   }
+
+  return builder;
 }
 
-function writeFaceProfileStore(store) {
-  fs.writeFileSync(FACE_PROFILE_STORE_PATH, JSON.stringify(store, null, 2), "utf8");
+async function findStudentById(studentId) {
+  const studentIdText = normalize(studentId);
+  const documents = await readCollectionDocuments("students");
+  return (
+    documents.find((student) => valuesMatch(student.id, studentIdText)) ||
+    documents.find((student) => valuesMatch(student.student_id, studentIdText)) ||
+    null
+  );
 }
 
-function saveFaceProfileToStore(studentId, valueOrNull) {
-  const store = readFaceProfileStore();
-  const key = String(studentId);
-  if (valueOrNull == null || valueOrNull === "") {
-    delete store[key];
-  } else {
-    store[key] = valueOrNull;
-  }
-  writeFaceProfileStore(store);
+async function findUserByEmail(email) {
+  const documents = await readCollectionDocuments("users");
+  const normalizedEmail = normalize(email).toLowerCase();
+  return documents.find((user) => normalize(user.email).toLowerCase() === normalizedEmail) || null;
 }
 
-function getStoredFaceProfile(studentId) {
-  const store = readFaceProfileStore();
-  const entry = store[String(studentId)];
-  if (!entry) return null;
-  if (typeof entry === "string") {
-    return {
-      face_url: entry,
-      face_verified: true,
-      face_verified_at: null,
-    };
-  }
-  if (typeof entry === "object") {
-    const faceUrl = typeof entry.face_url === "string" ? entry.face_url.trim() : "";
-    if (!faceUrl) return null;
-    return {
-      face_url: faceUrl,
-      face_verified: Boolean(entry.face_verified),
-      face_verified_at: typeof entry.face_verified_at === "string" ? entry.face_verified_at : null,
-    };
-  }
-  return null;
+async function findUserById(id) {
+  const idText = normalize(id);
+  const documents = await readCollectionDocuments("users");
+  return documents.find((user) => valuesMatch(user.id, idText)) || null;
 }
 
-function readFaceVerificationState(student) {
-  const verified = FACE_VERIFIED_FIELDS.some((field) => Boolean(student?.[field]));
-  const verifiedAt =
-    FACE_VERIFIED_AT_FIELDS.find((field) => typeof student?.[field] === "string" && student[field].trim()) ||
-    null;
+async function ensureDefaultAdminAccount() {
+  const usersCollection = await getMongoCollection("users");
+  const existingAdmin = await usersCollection.findOne({ user_type: "admin" });
+
+  if (existingAdmin) {
+    return;
+  }
+
+  const adminUser = {
+    id: process.env.ADMIN_ID || "ADMIN-001",
+    email: normalize(process.env.ADMIN_EMAIL || "admin@example.com").toLowerCase(),
+    password: process.env.ADMIN_PASSWORD || "admin123",
+    user_type: "admin",
+  };
+
+  await usersCollection.insertOne(adminUser);
+  console.log(`Seeded default admin account: ${adminUser.email}`);
+}
+
+const dataStore = {
+  from(collectionName) {
+    return createCollectionQueryBuilder(collectionName);
+  },
+  auth: {
+    async signInWithPassword({ email, password }) {
+      const user = await findUserByEmail(email);
+
+      if (!user || !valuesMatch(user.password, password)) {
+        return {
+          data: { user: null, session: null },
+          error: new Error("Invalid credentials"),
+        };
+      }
+
+      return {
+        data: {
+          user: toPlainObject(user),
+          session: {
+            access_token: randomUUID(),
+            refresh_token: randomUUID(),
+            expires_at: Math.floor(Date.now() / 1000) + 60 * 60,
+            token_type: "bearer",
+          },
+        },
+        error: null,
+      };
+    },
+    admin: {
+      async signOut() {
+        return { data: null, error: null };
+      },
+    },
+  },
+};
+
+async function getStudentById(studentId) {
+  const student = await findStudentById(studentId);
+  return student ? toPlainObject(student) : null;
+}
+
+async function updateStudentById(studentId, updates) {
+  const student = await findStudentById(studentId);
+  if (!student?._id) {
+    return { error: null, matchedCount: 0 };
+  }
+
+  const studentsCollection = await getMongoCollection("students");
+  const result = await studentsCollection.updateOne({ _id: student._id }, { $set: { ...updates } });
+  return { error: null, matchedCount: result.matchedCount };
+}
+
+function buildStudentResetUpdates() {
   return {
-    face_verified: verified,
-    face_verified_at: verifiedAt ? student[verifiedAt].trim() : null,
+    status: "NOT_ARRIVED",
+    arrived_at: null,
+    departed_at: null,
+    verification_type: null,
+    token: "",
+    pickup_pin: null,
+    pin_expires_at: null,
   };
 }
 
-function buildFaceProfileUpdatePayload(student, faceValue, clear = false) {
-  const payload = {};
+function getBearerToken(req) {
+  const authHeader = normalize(req.headers?.authorization);
+  if (!authHeader) return "";
 
-  for (const field of FACE_IMAGE_FIELDS) {
-    if (Object.prototype.hasOwnProperty.call(student, field)) {
-      payload[field] = clear ? null : faceValue;
-    }
-  }
-
-  for (const field of FACE_VERIFIED_FIELDS) {
-    if (Object.prototype.hasOwnProperty.call(student, field)) {
-      payload[field] = clear ? false : true;
-    }
-  }
-
-  for (const field of FACE_VERIFIED_AT_FIELDS) {
-    if (Object.prototype.hasOwnProperty.call(student, field)) {
-      payload[field] = clear ? null : new Date().toISOString();
-    }
-  }
-
-  return payload;
-}
-
-function mergeFaceProfile(student) {
-  if (!student || typeof student !== "object") return student;
-  const hasFace = FACE_IMAGE_FIELDS.some((field) => {
-    const value = student[field];
-    return typeof value === "string" && value.trim() !== "";
-  });
-  if (hasFace) {
-    return {
-      ...student,
-      ...readFaceVerificationState(student),
-    };
-  }
-
-  const fallbackFace = getStoredFaceProfile(student.id);
-  if (!fallbackFace) return student;
-  return {
-    ...student,
-    ...fallbackFace,
-  };
+  const [scheme, token] = authHeader.split(" ");
+  if (normalize(scheme).toLowerCase() !== "bearer") return "";
+  return normalize(token);
 }
 
 function normalizeStatus(value) {
-  return String(value || "")
-    .trim()
-    .toUpperCase()
-    .replace(/[\s-]+/g, "_");
+  return normalize(value).toUpperCase().replace(/[\s-]+/g, "_");
 }
 
-function isArrivedStatus(value) {
-  return normalizeStatus(value) === "ARRIVED";
+function isNotArrived(status) {
+  const normalized = normalizeStatus(status);
+  return normalized === "NOT_ARRIVED" || normalized === "";
 }
 
-function isDepartedStatus(value) {
-  return normalizeStatus(value) === "DEPARTED";
+function isArrived(status) {
+  return normalizeStatus(status) === "ARRIVED";
 }
 
-function isNotArrivedStatus(value) {
-  const normalized = normalizeStatus(value);
-  return normalized === "NOT_ARRIVED" || normalized === "NOTARRIVED" || normalized === "";
+function isDeparted(status) {
+  return normalizeStatus(status) === "DEPARTED";
 }
 
-/*
------------------------------------
-LOGIN API
------------------------------------
-*/
+function studentRfidMatches(student, rfidValue) {
+  const wanted = normalize(rfidValue).toLowerCase();
+  if (!wanted) return false;
+
+  return RFID_FIELDS.some((field) => {
+    const value = normalize(student?.[field]).toLowerCase();
+    return value !== "" && value === wanted;
+  });
+}
+
+function buildArrivalUpdate(verificationType = "RFID") {
+  return {
+    status: "ARRIVED",
+    arrived_at: new Date().toISOString(),
+    departed_at: null,
+    verification_type: verificationType,
+  };
+}
+
+function buildDepartureUpdate(verificationType = "RFID") {
+  return {
+    status: "DEPARTED",
+    departed_at: new Date().toISOString(),
+    verification_type: verificationType,
+    token: "",
+    pickup_pin: null,
+    pin_expires_at: null,
+  };
+}
+
+async function createPendingParentApproval(student, { clearToken = false, clearPin = false } = {}) {
+  const existingRequestId = normalize(student?.departure_request_id);
+  const requestId = existingRequestId || randomUUID();
+  const updates = {
+    departure_request_id: requestId,
+    departure_request_status: "PENDING_PARENT_APPROVAL",
+  };
+
+  if (clearToken) {
+    updates.token = "";
+  }
+
+  if (clearPin) {
+    updates.pickup_pin = null;
+    updates.pin_expires_at = null;
+  }
+
+  const { error } = await updateStudentById(student.id, updates);
+  return { error, requestId };
+}
+
+async function processRfidVerification({ studentId, rfidValue, mode }) {
+  const student = await getStudentById(studentId);
+
+  if (!student) {
+    return {
+      status: 404,
+      body: {
+        status: "ERROR",
+        message: "Student not found",
+      },
+    };
+  }
+
+  if (!studentRfidMatches(student, rfidValue)) {
+    return {
+      status: 401,
+      body: {
+        status: "ERROR",
+        message: "RFID does not match this student",
+        student_id: student.id,
+      },
+    };
+  }
+
+  const normalizedMode = normalize(mode).toUpperCase();
+  const currentStatus = normalizeStatus(student.status);
+
+  if (normalizedMode === "ARRIVAL" || (normalizedMode === "" && isNotArrived(student.status))) {
+    const { error: updateError } = await updateStudentById(student.id, {
+      ...buildArrivalUpdate(),
+      verification_type: "RFID",
+    });
+
+    if (updateError) {
+      return {
+        status: 500,
+        body: {
+          status: "ERROR",
+          message: "Failed to update student arrival status",
+          details: updateError.message,
+        },
+      };
+    }
+
+    return {
+      status: 200,
+      body: {
+        status: "ARRIVED",
+        action: "CHECKED_IN",
+        previous_status: currentStatus || "NOT_ARRIVED",
+        student_id: student.id,
+        student_name: student.name,
+        message: "RFID verified. Student checked in.",
+      },
+    };
+  }
+
+  if (normalizedMode === "DEPARTURE" || (normalizedMode === "" && isArrived(student.status))) {
+    if (!isArrived(student.status)) {
+      return {
+        status: 409,
+        body: {
+          status: "ERROR",
+          student_id: student.id,
+          student_name: student.name,
+          message: `Unsupported current status: ${student.status}`,
+        },
+      };
+    }
+
+    const parent2faEnabled = Boolean(student.parent_2fa_enabled);
+
+    if (parent2faEnabled) {
+      const { error: pendingError, requestId } = await createPendingParentApproval(student);
+
+      if (pendingError) {
+        return {
+          status: 500,
+          body: {
+            status: "ERROR",
+            message: "Failed to create departure request",
+            details: pendingError.message,
+          },
+        };
+      }
+
+      return {
+        status: 200,
+        body: {
+          status: "PENDING_PARENT_APPROVAL",
+          action: "REQUESTED_PARENT_APPROVAL",
+          previous_status: currentStatus || "ARRIVED",
+          student_id: student.id,
+          student_name: student.name,
+          request_id: requestId,
+          requires_parent_id: true,
+          message: "RFID verified. Parent ID approval is required for departure.",
+        },
+      };
+    }
+
+    const { error: updateError } = await updateStudentById(student.id, buildDepartureUpdate());
+
+    if (updateError) {
+      return {
+        status: 500,
+        body: {
+          status: "ERROR",
+          message: "Failed to update student departure status",
+          details: updateError.message,
+        },
+      };
+    }
+
+    return {
+      status: 200,
+      body: {
+        status: "DEPARTED",
+        action: "CHECKED_OUT",
+        previous_status: currentStatus || "ARRIVED",
+        student_id: student.id,
+        student_name: student.name,
+        message: "RFID verified. Student checked out.",
+      },
+    };
+  }
+
+  if (isDeparted(student.status)) {
+    return {
+      status: 200,
+      body: {
+        status: "DEPARTED",
+        action: "NO_CHANGE",
+        previous_status: "DEPARTED",
+        student_id: student.id,
+        student_name: student.name,
+        message: "Student already departed",
+      },
+    };
+  }
+
+  return {
+    status: 409,
+    body: {
+      status: "ERROR",
+      student_id: student.id,
+      student_name: student.name,
+      message: `Unsupported current status: ${student.status}`,
+    },
+  };
+}
+
+async function respondFromRfidVerification(req, res, options = {}) {
+  try {
+    const combinedScan = normalize(
+      options.combinedScan ?? req.params.scan_payload ?? req.body?.scan_value ?? req.body?.scan ?? req.body?.value,
+    );
+    let studentId = normalize(options.studentId ?? req.params.student_id ?? req.body?.student_id);
+    let rfidValue = normalize(options.rfidValue ?? req.params.card_id ?? req.body?.rfid_value ?? req.body?.card_id);
+    const mode = normalize(options.mode ?? req.body?.mode ?? "");
+
+    if (combinedScan && (!studentId || !rfidValue)) {
+      const parsed = parseStudentCardPair(combinedScan);
+      if (parsed) {
+        studentId = studentId || parsed.studentId;
+        rfidValue = rfidValue || parsed.cardId;
+      }
+    }
+
+    if (!studentId || !rfidValue) {
+      return res.status(400).json({ error: "student_id and card_id are required", format: "<student_id>:<card_id>" });
+    }
+
+    const result = await processRfidVerification({ studentId, rfidValue, mode });
+    return res.status(result.status).json(result.body);
+  } catch (err) {
+    console.error("RFID verification error:", err);
+    return res.status(500).json({ error: "RFID verification failed", details: err?.message || null });
+  }
+}
+
+async function handleRfidScan(req, res) {
+  return respondFromRfidVerification(req, res, {
+    combinedScan: req.params.scan_payload,
+    studentId: req.params.student_id,
+    rfidValue: req.params.card_id,
+  });
+}
+
+app.post("/auth/login", async (req, res) => {
+  try {
+    const email = normalize(req.body?.email).toLowerCase();
+    const password = String(req.body?.password || "");
+
+    if (!email || !password) {
+      return res.status(400).json({ error: "email and password are required" });
+    }
+
+    const { data, error } = await dataStore.auth.signInWithPassword({ email, password });
+
+    if (error || !data?.session) {
+      return res.status(401).json({
+        status: "ERROR",
+        message: "Invalid credentials",
+        details: error?.message || null,
+      });
+    }
+
+    return res.json({
+      status: "OK",
+      message: "Login successful",
+      user: data.user,
+      session: {
+        access_token: data.session.access_token,
+        refresh_token: data.session.refresh_token,
+        expires_at: data.session.expires_at,
+        token_type: data.session.token_type,
+      },
+    });
+  } catch (err) {
+    console.error("Login error:", err);
+    return res.status(500).json({
+      status: "ERROR",
+      message: "Login failed",
+      details: err?.message || null,
+    });
+  }
+});
+
 app.post("/login", async (req, res) => {
   try {
-    const { email, password } = req.body;
+    const email = normalize(req.body?.email).toLowerCase();
+    const password = String(req.body?.password || "");
 
-    const { data: user, error } = await supabase
+    if (!email || !password) {
+      return res.status(400).json({ error: "email and password are required" });
+    }
+
+    const { data: user, error } = await dataStore
       .from("users")
-      .select("*")
+      .select("id, email, user_type, student_id")
       .eq("email", email)
       .eq("password", password)
       .single();
@@ -248,564 +620,962 @@ app.post("/login", async (req, res) => {
       return res.status(401).json({ error: "Invalid credentials" });
     }
 
-    res.json({
-      user: {
-        id: user.id,
-        email: user.email,
-        user_type: user.user_type,
-        student_id: user.student_id,
-      },
-    });
+    return res.json({ user });
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Login error" });
+    console.error("Legacy login error:", err);
+    return res.status(500).json({ error: "Login error" });
   }
 });
 
-/*
------------------------------------
-FORGOT PASSWORD API
------------------------------------
-*/
-app.post("/forgot-password", async (req, res) => {
+app.post("/auth/logout", async (req, res) => {
   try {
-    const email = String(req.body?.email || "").trim().toLowerCase();
-    const newPassword = String(req.body?.newPassword || "").trim();
-
-    if (!email || !newPassword) {
-      return res.status(400).json({ error: "Email and new password are required" });
+    const accessToken = normalize(req.body?.access_token || getBearerToken(req));
+    if (!accessToken) {
+      return res.status(400).json({
+        error: "access_token is required (body or Authorization: Bearer <token>)",
+      });
     }
 
-    if (newPassword.length < 6) {
-      return res.status(400).json({ error: "Password must be at least 6 characters" });
+    const { error } = await dataStore.auth.admin.signOut(accessToken);
+    if (error) {
+      return res.status(400).json({
+        status: "ERROR",
+        message: "Logout failed",
+        details: error.message,
+      });
     }
 
-    const { data: user, error: findError } = await supabase
+    return res.json({ status: "OK", message: "Logout successful" });
+  } catch (err) {
+    console.error("Logout error:", err);
+    return res.status(500).json({
+      status: "ERROR",
+      message: "Logout failed",
+      details: err?.message || null,
+    });
+  }
+});
+
+app.post("/logout", async (req, res) => {
+  try {
+    const accessToken = normalize(req.body?.access_token || getBearerToken(req));
+
+    if (accessToken) {
+      const { error } = await dataStore.auth.admin.signOut(accessToken);
+      if (error) {
+        return res.status(400).json({
+          status: "ERROR",
+          message: "Logout failed",
+          details: error.message,
+        });
+      }
+    }
+
+    return res.json({ status: "OK", message: "Logout successful" });
+  } catch (err) {
+    console.error("Legacy logout error:", err);
+    return res.status(500).json({ error: "Logout error" });
+  }
+});
+
+// Supports both legacy split scans and the new combined <student_id>:<card_id> format.
+app.post("/rfid/scan/:scan_payload", handleRfidScan);
+app.get("/rfid/scan/:scan_payload", handleRfidScan);
+app.post("/rfid/scan/:student_id/:card_id", handleRfidScan);
+app.get("/rfid/scan/:student_id/:card_id", handleRfidScan);
+
+app.get("/students", async (_req, res) => {
+  try {
+    const data = await readCollectionDocuments("students");
+    return res.json(data);
+  } catch (err) {
+    console.error("Fetch students error:", err);
+    return res.status(500).json({ error: "Failed to fetch students", details: err?.message || null });
+  }
+});
+
+app.post("/register", async (req, res) => {
+  try {
+    const userType = normalize(req.body?.user_type).toLowerCase();
+
+    if (!["family", "student", "parent", "admin"].includes(userType)) {
+      return res.status(400).json({ error: "Invalid user_type." });
+    }
+
+    if (userType === "family") {
+      const parentName = normalize(req.body?.parent_name);
+      const parentId = normalize(req.body?.parent_id);
+      const parentEmail = normalize(req.body?.parent_email).toLowerCase();
+      const parentPassword = String(req.body?.parent_password || "");
+      const studentName = normalize(req.body?.student_name);
+      const studentId = normalize(req.body?.student_id);
+      const cardId = normalize(req.body?.card_id);
+
+      if (!parentName || !parentId || !parentEmail || !parentPassword || !studentName || !studentId || !cardId) {
+        return res.status(400).json({
+          error: "Parent name, parent id, parent email, parent password, student name, student_id, and card_id are required.",
+        });
+      }
+
+      const { data: existingParentEmail, error: parentEmailLookupError } = await dataStore
+        .from("users")
+        .select("id")
+        .eq("email", parentEmail)
+        .maybeSingle();
+
+      if (parentEmailLookupError) {
+        return res.status(500).json({ error: "Failed to check parent email uniqueness.", details: parentEmailLookupError.message });
+      }
+
+      if (existingParentEmail) {
+        return res.status(409).json({ error: "Parent email is already registered." });
+      }
+
+      const { data: existingParentId, error: parentIdLookupError } = await dataStore
+        .from("users")
+        .select("id")
+        .eq("id", parentId)
+        .maybeSingle();
+
+      if (parentIdLookupError) {
+        return res.status(500).json({ error: "Failed to check parent id uniqueness.", details: parentIdLookupError.message });
+      }
+
+      if (existingParentId) {
+        return res.status(409).json({ error: "Parent ID already exists." });
+      }
+
+      const existingStudent = await findStudentById(studentId);
+      if (existingStudent) {
+        return res.status(409).json({ error: "Student ID already exists." });
+      }
+
+      const parentUser = {
+        id: parentId,
+        email: parentEmail,
+        password: parentPassword,
+        user_type: "parent",
+        student_id: studentId,
+        student_name: studentName,
+        name: parentName,
+      };
+
+      const usersCollection = await getMongoCollection("users");
+      const studentsCollection = await getMongoCollection("students");
+
+      try {
+        await usersCollection.insertOne(parentUser);
+        await studentsCollection.insertOne({
+          id: studentId,
+          name: studentName,
+          parent_id: parentId,
+          parent_name: parentName,
+          parent_email: parentEmail,
+          parent_2fa_enabled: false,
+          card_id: cardId,
+          status: "NOT_ARRIVED",
+          arrived_at: null,
+          departed_at: null,
+          verification_type: null,
+          token: "",
+          pickup_pin: null,
+          pin_expires_at: null,
+          face_url: "",
+          face_verified: false,
+          face_verified_at: null,
+        });
+      } catch (error) {
+        await usersCollection.deleteOne({ id: parentId });
+        await studentsCollection.deleteOne({ id: studentId });
+        throw error;
+      }
+
+      return res.status(201).json({
+        user: {
+          id: parentUser.id,
+          email: parentUser.email,
+          user_type: parentUser.user_type,
+          student_id: parentUser.student_id,
+          student_name: parentUser.student_name,
+        },
+      });
+    }
+
+    const email = normalize(req.body?.email).toLowerCase();
+    const password = String(req.body?.password || "");
+
+    if (!email || !password) {
+      return res.status(400).json({ error: "Email and password are required." });
+    }
+
+    if (password.length < 6) {
+      return res.status(400).json({ error: "Password must be at least 6 characters." });
+    }
+
+    const { data: existingByEmail, error: emailLookupError } = await dataStore
       .from("users")
       .select("id")
       .eq("email", email)
       .maybeSingle();
 
-    if (findError) {
-      throw findError;
+    if (emailLookupError) {
+      return res.status(500).json({ error: "Failed to check email uniqueness.", details: emailLookupError.message });
     }
 
-    if (!user) {
-      return res.status(404).json({ error: "Email not found" });
+    if (existingByEmail) {
+      return res.status(409).json({ error: "Email is already registered." });
     }
 
-    const { error: updateError } = await supabase
-      .from("users")
-      .update({ password: newPassword })
-      .eq("id", user.id);
+    let user;
 
-    if (updateError) {
-      throw updateError;
-    }
+    if (userType === "family") {
+      const parentName = normalize(req.body?.parent_name);
+      const parentId = normalize(req.body?.parent_id);
+      const parentEmail = normalize(req.body?.parent_email).toLowerCase();
+      const parentPassword = String(req.body?.parent_password || "");
+      const studentName = normalize(req.body?.student_name);
+      const studentId = normalize(req.body?.student_id);
+      const cardId = normalize(req.body?.card_id);
 
-    res.json({ message: "Password updated successfully" });
-  } catch (err) {
-    console.error("Forgot password error:", err);
-    res.status(500).json({ error: "Could not reset password" });
-  }
-});
-
-/*
------------------------------------
-CHECK-IN (QR BASED)
------------------------------------
-*/
-app.post("/checkin/:id/:session_token", async (req, res) => {
-  try {
-    const { id, session_token } = req.params;
-
-    const { data: student } = await supabase
-      .from("students")
-      .select("*")
-      .eq("id", id)
-      .single();
-
-    if (!student) return res.status(404).json({ error: "Student not found" });
-
-    if (isArrivedStatus(student.status)) {
-      return res.json({ status: "ARRIVED", token: student.token });
-    }
-
-    const { error } = await supabase
-      .from("students")
-      .update({
-        status: "ARRIVED",
-        token: session_token,
-        arrived_at: new Date().toISOString(),
-        departed_at: null,
-        verification_type: "QR",
-      })
-      .eq("id", id);
-
-    if (error) throw error;
-
-    res.json({ status: "ARRIVED", token: session_token });
-  } catch (err) {
-    console.error("Check-in error:", err);
-    res.status(500).json({ error: "Check-in failed" });
-  }
-});
-
-/*
------------------------------------
-VERIFY DEPARTURE (QR)
------------------------------------
-*/
-app.post("/verify-departure/:id/:token", async (req, res) => {
-  try {
-    const { id, token } = req.params;
-
-    const { data: student } = await supabase
-      .from("students")
-      .select("*")
-      .eq("id", id)
-      .single();
-
-    if (!student) return res.status(404).json({ message: "Student not found" });
-
-    if (student.token !== token) {
-      return res.json({ status: "ERROR", message: "Invalid token" });
-    }
-
-    const { error } = await supabase
-      .from("students")
-      .update({
-        status: "DEPARTED",
-        token: null,
-        pickup_pin: null,
-        pin_expires_at: null,
-        departed_at: new Date().toISOString(),
-      })
-      .eq("id", id);
-
-    if (error) throw error;
-
-    res.json({ status: "DEPARTED", student_name: student.name });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Verification failed" });
-  }
-});
-
-/*
------------------------------------
-GENERATE PIN
------------------------------------
-*/
-app.post("/generate-pin/:id", async (req, res) => {
-  try {
-    const { id } = req.params;
-
-    const { data: student } = await supabase
-      .from("students")
-      .select("*")
-      .eq("id", id)
-      .single();
-
-    if (!student || student.status !== "ARRIVED") {
-      return res.status(400).json({ error: "Student not eligible" });
-    }
-
-    const pin = Math.floor(100000 + Math.random() * 900000).toString();
-    const expires = new Date(Date.now() + 10 * 60 * 1000).toISOString();
-
-    const { error } = await supabase
-      .from("students")
-      .update({
-        pickup_pin: pin,
-        pin_expires_at: expires,
-      })
-      .eq("id", id);
-
-    if (error) throw error;
-
-    res.json({ pin, expires_at: expires });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "PIN generation failed" });
-  }
-});
-
-/*
------------------------------------
-VERIFY PIN (PRIMARY)
------------------------------------
-*/
-app.post("/verify-pin", async (req, res) => {
-  try {
-    const pin = String(req.body.pin);
-
-    const { data: students } = await supabase
-      .from("students")
-      .select("*")
-      .eq("pickup_pin", pin)
-      .eq("status", "ARRIVED");
-
-    if (!students || students.length !== 1) {
-      return res.json({ status: "ERROR", message: "Invalid PIN" });
-    }
-
-    const student = students[0];
-
-    if (new Date() > new Date(student.pin_expires_at)) {
-      return res.json({ status: "ERROR", message: "Expired PIN" });
-    }
-
-    const { error } = await supabase
-      .from("students")
-      .update({
-        status: "DEPARTED",
-        pickup_pin: null,
-        pin_expires_at: null,
-        departed_at: new Date().toISOString(),
-        verification_type: "PIN",
-      })
-      .eq("id", student.id);
-
-    if (error) throw error;
-
-    res.json({ status: "DEPARTED", student_name: student.name });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "PIN verification failed" });
-  }
-});
-
-/*
------------------------------------
-CHECK-IN BY FACE (ALTERNATIVE TO QR)
------------------------------------
-*/
-app.post("/checkin-face/:id", async (req, res) => {
-  try {
-    const { id } = req.params;
-
-    const { data: student } = await supabase
-      .from("students")
-      .select("*")
-      .eq("id", id)
-      .single();
-
-    if (!student) {
-      return res.status(404).json({ status: "ERROR", message: "Student not found" });
-    }
-
-    if (!isNotArrivedStatus(student.status)) {
-      return res
-        .status(400)
-        .json({ status: "ERROR", message: "Student is already checked in or departed" });
-    }
-
-    const { error } = await supabase
-      .from("students")
-      .update({
-        status: "ARRIVED",
-        token: null,
-        pickup_pin: null,
-        pin_expires_at: null,
-        arrived_at: new Date().toISOString(),
-        departed_at: null,
-        verification_type: "FACE",
-      })
-      .eq("id", id);
-
-    if (error) throw error;
-
-    res.json({
-      status: "ARRIVED",
-      student_name: student.name,
-      message: "Face recognized. Student checked in.",
-    });
-  } catch (err) {
-    console.error("Face check-in error:", err);
-    res.status(500).json({ status: "ERROR", message: "Face check-in failed" });
-  }
-});
-
-/*
------------------------------------
-ADMIN APIs
------------------------------------
-*/
-
-async function registerFaceProfileHandler(req, res) {
-  try {
-    const student_id = req.params.id;
-    const clear = req.body?.clear === true;
-    const rawUrl = String(
-      req.body?.imageUrl || req.body?.faceImageUrl || req.body?.image_url || ""
-    ).trim();
-    const imageDataUrl = String(req.body?.imageDataUrl || "").trim();
-    const payloadValue = imageDataUrl || rawUrl;
-
-    if (!clear) {
-      if (!payloadValue) {
-        return res.status(400).json({ error: "Face image is required" });
+      if (!parentName || !parentId || !parentEmail || !parentPassword || !studentName || !studentId || !cardId) {
+        return res.status(400).json({
+          error: "Parent name, parent id, parent email, parent password, student name, student_id, and card_id are required.",
+        });
       }
 
-      const isDataUrl = /^data:image\/[a-zA-Z0-9.+-]+;base64,/.test(payloadValue);
-      if (!isDataUrl) {
-        try {
-          new URL(payloadValue);
-        } catch {
-          return res.status(400).json({ error: "Face image must be a valid URL or uploaded image" });
-        }
-      } else {
-        const imageBytes = estimateDataUrlImageBytes(payloadValue);
-        if (imageBytes > MAX_UPLOAD_IMAGE_BYTES) {
-          return res.status(400).json({ error: "Uploaded image must be 10MB or smaller" });
-        }
+      const { data: existingParentEmail, error: parentEmailLookupError } = await dataStore
+        .from("users")
+        .select("id")
+        .eq("email", parentEmail)
+        .maybeSingle();
+
+      if (parentEmailLookupError) {
+        return res.status(500).json({ error: "Failed to check parent email uniqueness.", details: parentEmailLookupError.message });
       }
-    }
 
-    const { data: student, error: fetchError } = await supabase
-      .from("students")
-      .select("*")
-      .eq("id", student_id)
-      .single();
-
-    if (fetchError || !student) {
-      return res.status(404).json({ error: "Student not found" });
-    }
-
-    const faceField = FACE_IMAGE_FIELDS.find((field) =>
-      Object.prototype.hasOwnProperty.call(student, field)
-    );
-    const updatePayload = buildFaceProfileUpdatePayload(student, payloadValue, clear);
-    let source = "local_store";
-
-    if (faceField) {
-      const { error: updateError } = await supabase
-        .from("students")
-        .update(updatePayload)
-        .eq("id", student_id);
-
-      if (!updateError) {
-        source = "students_table";
-      } else {
-        // Prototype fallback: keep registration usable even without a writable face column.
-        saveFaceProfileToStore(
-          student_id,
-          clear ? null : {
-            face_url: payloadValue,
-            face_verified: true,
-            face_verified_at: new Date().toISOString(),
-          }
-        );
+      if (existingParentEmail) {
+        return res.status(409).json({ error: "Parent email is already registered." });
       }
-    } else {
-      // Prototype fallback: if no face column exists, store profile locally.
-      saveFaceProfileToStore(
-        student_id,
-        clear ? null : {
-          face_url: payloadValue,
-          face_verified: true,
-          face_verified_at: new Date().toISOString(),
-        }
-      );
+
+      const { data: existingParentId, error: parentIdLookupError } = await dataStore
+        .from("users")
+        .select("id")
+        .eq("id", parentId)
+        .maybeSingle();
+
+      if (parentIdLookupError) {
+        return res.status(500).json({ error: "Failed to check parent id uniqueness.", details: parentIdLookupError.message });
+      }
+
+      if (existingParentId) {
+        return res.status(409).json({ error: "Parent ID already exists." });
+      }
+
+      const existingStudent = await findStudentById(studentId);
+      if (existingStudent) {
+        return res.status(409).json({ error: "Student ID already exists." });
+      }
+
+      const parentUser = {
+        id: parentId,
+        email: parentEmail,
+        password: parentPassword,
+        user_type: "parent",
+        student_id: studentId,
+        student_name: studentName,
+        name: parentName,
+      };
+
+      const usersCollection = await getMongoCollection("users");
+      const studentsCollection = await getMongoCollection("students");
+
+      try {
+        await usersCollection.insertOne(parentUser);
+        await studentsCollection.insertOne({
+          id: studentId,
+          name: studentName,
+          parent_id: parentId,
+          parent_name: parentName,
+          parent_email: parentEmail,
+          parent_2fa_enabled: false,
+          card_id: cardId,
+          status: "NOT_ARRIVED",
+          arrived_at: null,
+          departed_at: null,
+          verification_type: null,
+          token: "",
+          pickup_pin: null,
+          pin_expires_at: null,
+          face_url: "",
+          face_verified: false,
+          face_verified_at: null,
+        });
+      } catch (error) {
+        await usersCollection.deleteOne({ id: parentId });
+        await studentsCollection.deleteOne({ id: studentId });
+        throw error;
+      }
+
+      return res.status(201).json({
+        user: {
+          id: parentUser.id,
+          email: parentUser.email,
+          user_type: parentUser.user_type,
+          student_id: parentUser.student_id,
+          student_name: parentUser.student_name,
+        },
+      });
     }
 
-    res.json({
-      message: clear ? "Face profile removed" : "Face profile saved",
-      face_field: faceField || "face_image_url",
-      face_url: clear ? null : payloadValue,
-      face_verified: !clear,
-      face_verified_at: clear ? null : new Date().toISOString(),
-      source,
-    });
-  } catch (err) {
-    console.error("Register face error:", err);
-    res.status(500).json({ error: "Server error" });
-  }
-}
+    if (userType === "student") {
+      const studentName = normalize(req.body?.name);
+      const studentId = normalize(req.body?.student_id);
+      const cardId = normalize(req.body?.card_id);
 
-/*
------------------------------------
-ADMIN/PARENT: REGISTER/CLEAR FACE PROFILE
------------------------------------
-*/
-app.post("/admin/register-face/:id", registerFaceProfileHandler);
-app.post("/parent/register-face/:id", registerFaceProfileHandler);
-app.post("/register-face/:id", registerFaceProfileHandler);
+      if (!studentName || !studentId || !cardId) {
+        return res.status(400).json({ error: "Student name, student_id, and card_id are required." });
+      }
 
-/*
------------------------------------
-ADMIN: FORCE DEPART STUDENT
------------------------------------
-*/
-app.post("/admin/force-depart/:id", async (req, res) => {
-  try {
-    const student_id = req.params.id;
+      const existingStudent = await findStudentById(studentId);
+      if (existingStudent) {
+        return res.status(409).json({ error: "Student ID already exists." });
+      }
 
-    const { data: student, error: fetchError } = await supabase
-      .from("students")
-      .select("*")
-      .eq("id", student_id)
-      .single();
+      user = {
+        id: studentId,
+        email,
+        password,
+        user_type: "student",
+        student_id: studentId,
+        card_id: cardId,
+        name: studentName,
+      };
 
-    if (fetchError || !student) {
-      return res.status(404).json({ error: "Student not found" });
-    }
-
-    if (isDepartedStatus(student.status)) {
-      return res.json({ message: "Student already departed" });
-    }
-
-    const { error } = await supabase
-      .from("students")
-      .update({
-        status: "DEPARTED",
-        token: null,
-        pickup_pin: null,
-        pin_expires_at: null,
-        departed_at: new Date().toISOString(),
-        verification_type: "ADMIN",
-      })
-      .eq("id", student_id);
-
-    if (error) throw error;
-
-    res.json({
-      status: "DEPARTED",
-      message: "Student forcefully marked as departed",
-    });
-  } catch (err) {
-    console.error("Force depart error:", err);
-    res.status(500).json({ error: "Server error" });
-  }
-});
-
-/*
------------------------------------
-ADMIN: RESET SINGLE STUDENT
------------------------------------
-*/
-app.post("/admin/reset-student/:id", async (req, res) => {
-  try {
-    const student_id = req.params.id;
-
-    const { error } = await supabase
-      .from("students")
-      .update({
+      const studentsCollection = await getMongoCollection("students");
+      await studentsCollection.insertOne({
+        id: studentId,
+        name: studentName,
+        parent_2fa_enabled: false,
+        card_id: cardId,
         status: "NOT_ARRIVED",
-        token: null,
-        pickup_pin: null,
-        pin_expires_at: null,
         arrived_at: null,
         departed_at: null,
         verification_type: null,
-      })
-      .eq("id", student_id);
+        token: "",
+        pickup_pin: null,
+        pin_expires_at: null,
+        face_url: "",
+        face_verified: false,
+        face_verified_at: null,
+      });
+    } else if (userType === "parent") {
+      const id = normalize(req.body?.id);
+      const associatedStudentId = normalize(req.body?.student_id);
 
-    if (error) throw error;
+      if (!id || !associatedStudentId) {
+        return res.status(400).json({ error: "Parent id and student_id are required." });
+      }
 
-    res.json({
-      message: "Student reset successfully",
+      const student = await getStudentById(associatedStudentId);
+      if (!student) {
+        return res.status(404).json({ error: "Associated student_id not found." });
+      }
+
+      const { data: existingById, error: idLookupError } = await dataStore
+        .from("users")
+        .select("id")
+        .eq("id", id)
+        .maybeSingle();
+
+      if (idLookupError) {
+        return res.status(500).json({ error: "Failed to check parent id uniqueness.", details: idLookupError.message });
+      }
+
+      if (existingById) {
+        return res.status(409).json({ error: "ID already exists." });
+      }
+
+      user = {
+        id,
+        email,
+        password,
+        user_type: "parent",
+        student_id: associatedStudentId,
+      };
+    } else {
+      const id = normalize(req.body?.id);
+
+      if (!id) {
+        return res.status(400).json({ error: "Admin id is required." });
+      }
+
+      const { data: existingById, error: idLookupError } = await dataStore
+        .from("users")
+        .select("id")
+        .eq("id", id)
+        .maybeSingle();
+
+      if (idLookupError) {
+        return res.status(500).json({ error: "Failed to check admin id uniqueness.", details: idLookupError.message });
+      }
+
+      if (existingById) {
+        return res.status(409).json({ error: "ID already exists." });
+      }
+
+      user = {
+        id,
+        email,
+        password,
+        user_type: "admin",
+      };
+    }
+
+    const usersCollection = await getMongoCollection("users");
+    await usersCollection.insertOne(user);
+
+    return res.status(201).json({
+      user: {
+        id: user.id,
+        email: user.email,
+        user_type: user.user_type,
+        student_id: user.student_id || null,
+      },
     });
   } catch (err) {
-    console.error("Reset student error:", err);
-    res.status(500).json({ error: "Server error" });
+    console.error("Register error:", err);
+    return res.status(500).json({ error: "Registration failed", details: err?.message || null });
   }
 });
 
-/*
------------------------------------
-GET DATA
------------------------------------
-*/
-
-/*
------------------------------------
-GET ALL STUDENTS (ADMIN VIEW)
------------------------------------
-*/
-app.get("/students", async (req, res) => {
+app.post("/forgot-password", async (req, res) => {
   try {
-    const { data, error } = await supabase
+    const email = normalize(req.body?.email).toLowerCase();
+    const newPassword = String(req.body?.newPassword || "");
+
+    if (!email || !newPassword) {
+      return res.status(400).json({ error: "Email and newPassword are required." });
+    }
+
+    if (newPassword.length < 6) {
+      return res.status(400).json({ error: "Password must be at least 6 characters." });
+    }
+
+    const { data, error } = await dataStore
+      .from("users")
+      .update({ password: newPassword })
+      .eq("email", email)
+      .select("id")
+      .maybeSingle();
+
+    if (error) {
+      return res.status(500).json({ error: "Failed to update password.", details: error.message });
+    }
+
+    if (!data) {
+      return res.status(404).json({ error: "Email not found." });
+    }
+
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("Forgot password error:", err);
+    return res.status(500).json({ error: "Password reset failed", details: err?.message || null });
+  }
+});
+
+app.post("/checkin/:studentId/:sessionToken", async (req, res) => {
+  try {
+    const studentId = normalize(req.params.studentId);
+    const sessionToken = normalize(req.params.sessionToken);
+
+    if (!studentId || !sessionToken) {
+      return res.status(400).json({ error: "Session token is required." });
+    }
+
+    const student = await getStudentById(studentId);
+    if (!student) {
+      return res.status(404).json({ error: "Student not found." });
+    }
+
+    const { error } = await updateStudentById(student.id, {
+      ...buildArrivalUpdate("QR"),
+      token: sessionToken,
+    });
+
+    if (error) {
+      return res.status(500).json({ error: "Failed to check in student.", details: error.message });
+    }
+
+    return res.json({
+      status: "ARRIVED",
+      token: sessionToken,
+      arrived_at: new Date().toISOString(),
+      departured_at: null,
+    });
+  } catch (err) {
+    console.error("Check-in error:", err);
+    return res.status(500).json({ error: "Failed to check in student.", details: err?.message || null });
+  }
+});
+
+app.post("/checkin-face/:studentId", async (req, res) => {
+  try {
+    const student = await getStudentById(req.params.studentId);
+    if (!student) {
+      return res.status(404).json({ error: "Student not found." });
+    }
+
+    const { error } = await updateStudentById(student.id, buildArrivalUpdate("FACE"));
+    if (error) {
+      return res.status(500).json({ error: "Failed to check in student.", details: error.message });
+    }
+
+    return res.json({
+      status: "ARRIVED",
+      student_id: student.id,
+      student_name: student.name,
+      message: "Face verified. Student checked in.",
+    });
+  } catch (err) {
+    console.error("Face check-in error:", err);
+    return res.status(500).json({ error: "Face check-in failed", details: err?.message || null });
+  }
+});
+
+app.post("/generate-pin/:studentId", async (req, res) => {
+  try {
+    const student = await getStudentById(req.params.studentId);
+    if (!student) {
+      return res.status(404).json({ error: "Student not found." });
+    }
+
+    if (!isArrived(student.status)) {
+      return res.status(400).json({ error: "PIN can only be generated when student is ARRIVED." });
+    }
+
+    const pin = String(Math.floor(100000 + Math.random() * 900000));
+    const expiresAt = new Date(Date.now() + PIN_EXPIRY_MS).toISOString();
+
+    const { error } = await updateStudentById(student.id, {
+      pickup_pin: pin,
+      pin_expires_at: expiresAt,
+    });
+
+    if (error) {
+      return res.status(500).json({ error: "Failed to generate PIN.", details: error.message });
+    }
+
+    return res.json({ pin, pickup_pin: pin, expires_at: expiresAt });
+  } catch (err) {
+    console.error("Generate PIN error:", err);
+    return res.status(500).json({ error: "Failed to generate PIN.", details: err?.message || null });
+  }
+});
+
+app.post("/verify-pin", async (req, res) => {
+  try {
+    const pin = normalize(req.body?.pin);
+    if (!pin) {
+      return res.status(400).json({ error: "PIN is required." });
+    }
+
+    const { data: student, error } = await dataStore
       .from("students")
       .select("*")
-      .order("name", { ascending: true });
+      .eq("pickup_pin", pin)
+      .maybeSingle();
 
-    if (error) throw error;
+    if (error) {
+      return res.status(500).json({ error: "Failed to verify PIN.", details: error.message });
+    }
 
-    const rows = Array.isArray(data) ? data.map((student) => mergeFaceProfile(student)) : [];
-    res.json(rows);
+    if (!student) {
+      return res.status(404).json({ error: "Invalid PIN." });
+    }
+
+    const expiresAt = normalize(student.pin_expires_at);
+    if (expiresAt) {
+      const expiresAtMs = new Date(expiresAt).getTime();
+      if (!Number.isNaN(expiresAtMs) && expiresAtMs < Date.now()) {
+        await updateStudentById(student.id, {
+          pickup_pin: null,
+          pin_expires_at: null,
+        });
+        return res.status(410).json({ status: "ERROR", message: "Expired PIN" });
+      }
+    }
+
+    if (!isArrived(student.status)) {
+      return res.status(409).json({ status: "ERROR", message: "PIN can only be used when student is ARRIVED." });
+    }
+
+    if (Boolean(student.parent_2fa_enabled)) {
+      const { error: pendingError, requestId } = await createPendingParentApproval(student, { clearPin: true });
+      if (pendingError) {
+        return res.status(500).json({ error: "Failed to create departure request.", details: pendingError.message });
+      }
+
+      return res.json({
+        status: "PENDING_PARENT_APPROVAL",
+        student_id: student.id,
+        student_name: student.name,
+        request_id: requestId,
+        requires_parent_id: true,
+        message: "PIN verified. Parent ID approval is required for departure.",
+      });
+    }
+
+    const { error: updateError } = await updateStudentById(student.id, {
+      ...buildDepartureUpdate("PIN"),
+      pickup_pin: null,
+      pin_expires_at: null,
+    });
+
+    if (updateError) {
+      return res.status(500).json({ error: "Failed to verify PIN.", details: updateError.message });
+    }
+
+    return res.json({
+      status: "DEPARTED",
+      student_id: student.id,
+      student_name: student.name,
+      message: "PIN verified. Student checked out.",
+    });
   } catch (err) {
-    console.error("Fetch students error:", err);
-    res.status(500).json({ error: "Failed to fetch students" });
+    console.error("Verify PIN error:", err);
+    return res.status(500).json({ error: "Failed to verify PIN.", details: err?.message || null });
+  }
+});
+
+app.post("/verify-departure/:studentId/:token", async (req, res) => {
+  try {
+    const studentId = normalize(req.params.studentId);
+    const token = normalize(req.params.token);
+
+    if (!studentId || !token) {
+      return res.status(400).json({ error: "studentId and token are required." });
+    }
+
+    const student = await getStudentById(studentId);
+    if (!student) {
+      return res.status(404).json({ error: "Student not found." });
+    }
+
+    if (normalize(student.token) !== token) {
+      return res.status(401).json({ status: "ERROR", message: "Invalid departure token." });
+    }
+
+    if (!isArrived(student.status)) {
+      return res.status(409).json({ status: "ERROR", message: "Departure can only be verified when student is ARRIVED." });
+    }
+
+    const parent2faEnabled = Boolean(student.parent_2fa_enabled);
+
+    if (parent2faEnabled) {
+      const requestId = randomUUID();
+      const { error } = await updateStudentById(student.id, {
+        departure_request_id: requestId,
+        departure_request_status: "PENDING_PARENT_APPROVAL",
+        token: "",
+      });
+
+      if (error) {
+        return res.status(500).json({ error: "Failed to create departure request.", details: error.message });
+      }
+
+      return res.json({
+        status: "PENDING_PARENT_APPROVAL",
+        student_id: student.id,
+        student_name: student.name,
+        request_id: requestId,
+        requires_parent_id: true,
+        message: "Parent verification required before departure.",
+      });
+    }
+
+    const { error } = await updateStudentById(student.id, buildDepartureUpdate("QR"));
+    if (error) {
+      return res.status(500).json({ error: "Failed to verify departure.", details: error.message });
+    }
+
+    return res.json({
+      status: "DEPARTED",
+      student_id: student.id,
+      student_name: student.name,
+      message: "Departure verified successfully.",
+    });
+  } catch (err) {
+    console.error("Verify departure error:", err);
+    return res.status(500).json({ error: "Failed to verify departure.", details: err?.message || null });
+  }
+});
+
+app.get("/parent/departure-request/:studentId", async (req, res) => {
+  try {
+    const student = await getStudentById(req.params.studentId);
+    const requestStatus = normalize(student?.departure_request_status).toUpperCase();
+
+    if (!student || requestStatus !== "PENDING_PARENT_APPROVAL") {
+      return res.status(404).json({ error: "No pending departure request." });
+    }
+
+    return res.json({
+      request_id: normalize(student.departure_request_id),
+      student_id: student.id,
+      student_name: student.name,
+      status: requestStatus,
+      requires_parent_id: Boolean(student.parent_2fa_enabled),
+    });
+  } catch (err) {
+    console.error("Departure request lookup error:", err);
+    return res.status(500).json({ error: "Failed to load departure request.", details: err?.message || null });
+  }
+});
+
+app.post("/parent/verify-departure", async (req, res) => {
+  try {
+    const studentId = normalize(req.body?.student_id);
+    const requestId = normalize(req.body?.request_id);
+    const parentId = normalize(req.body?.parent_id);
+    const approved = Boolean(req.body?.approved);
+
+    const student = await getStudentById(studentId);
+    if (!student) {
+      return res.status(404).json({ error: "Student not found." });
+    }
+
+    const requiresParentId = Boolean(student.parent_2fa_enabled);
+
+    if (approved && requiresParentId && !parentId) {
+      return res.status(400).json({ error: "parent_id is required." });
+    }
+
+    if (!requestId || normalize(student.departure_request_id) !== requestId) {
+      return res.status(404).json({ error: "Departure request not found." });
+    }
+
+    if (approved) {
+      if (requiresParentId) {
+        const parent = await findUserById(parentId);
+        if (!parent || normalize(parent.user_type).toLowerCase() !== "parent") {
+          return res.status(404).json({ error: "Parent account not found." });
+        }
+
+        if (normalize(parent.student_id) !== normalize(student.id)) {
+          return res.status(403).json({ error: "Parent id does not match this student." });
+        }
+      }
+
+      const { error } = await updateStudentById(student.id, {
+        ...buildDepartureUpdate("PARENT"),
+        departure_request_id: null,
+        departure_request_status: null,
+      });
+
+      if (error) {
+        return res.status(500).json({ error: "Failed to approve departure.", details: error.message });
+      }
+    } else {
+      const { error } = await updateStudentById(student.id, {
+        departure_request_status: "REJECTED",
+      });
+
+      if (error) {
+        return res.status(500).json({ error: "Failed to reject departure.", details: error.message });
+      }
+    }
+
+    return res.json({ ok: true, approved });
+  } catch (err) {
+    console.error("Parent verify departure error:", err);
+    return res.status(500).json({ error: "Failed to verify departure.", details: err?.message || null });
+  }
+});
+
+async function setFaceProfile(req, res) {
+  try {
+    const student = await getStudentById(req.params.studentId);
+    if (!student) {
+      return res.status(404).json({ error: "Student not found." });
+    }
+
+    const clear = Boolean(req.body?.clear);
+    const imageDataUrl = normalize(req.body?.imageDataUrl);
+
+    if (clear) {
+      const { error } = await updateStudentById(student.id, {
+        face_url: "",
+        face_verified: false,
+        face_verified_at: null,
+      });
+
+      if (error) {
+        return res.status(500).json({ error: "Failed to clear face profile.", details: error.message });
+      }
+
+      return res.json({ ok: true, cleared: true });
+    }
+
+    if (!imageDataUrl) {
+      return res.status(400).json({ error: "imageDataUrl is required." });
+    }
+
+    const { error } = await updateStudentById(student.id, {
+      face_url: imageDataUrl,
+      face_verified: true,
+      face_verified_at: new Date().toISOString(),
+    });
+
+    if (error) {
+      return res.status(500).json({ error: "Failed to save face profile.", details: error.message });
+    }
+
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("Set face profile error:", err);
+    return res.status(500).json({ error: "Failed to save face profile.", details: err?.message || null });
+  }
+}
+
+app.post("/admin/register-face/:studentId", setFaceProfile);
+app.post("/parent/register-face/:studentId", setFaceProfile);
+app.post("/register-face/:studentId", setFaceProfile);
+
+app.post("/admin/force-depart/:studentId", async (req, res) => {
+  try {
+    const student = await getStudentById(req.params.studentId);
+    if (!student) {
+      return res.status(404).json({ error: "Student not found." });
+    }
+
+    const { error } = await updateStudentById(student.id, {
+      ...buildDepartureUpdate("ADMIN"),
+      pickup_pin: null,
+      pin_expires_at: null,
+    });
+
+    if (error) {
+      return res.status(500).json({ error: "Failed to force depart student.", details: error.message });
+    }
+
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("Force depart error:", err);
+    return res.status(500).json({ error: "Failed to force depart student.", details: err?.message || null });
+  }
+});
+
+app.post("/admin/students/:studentId/parent-2fa", async (req, res) => {
+  try {
+    const studentId = normalize(req.params.studentId);
+    const student = await getStudentById(studentId);
+    if (!student) {
+      return res.status(404).json({ error: "Student not found." });
+    }
+
+    const enabled = Boolean(req.body?.enabled);
+    const { error } = await updateStudentById(student.id, {
+      parent_2fa_enabled: enabled,
+    });
+
+    if (error) {
+      return res.status(500).json({ error: "Failed to update parent 2FA setting.", details: error.message });
+    }
+
+    return res.json({ ok: true, student_id: student.id, parent_2fa_enabled: enabled });
+  } catch (err) {
+    console.error("Update parent 2FA error:", err);
+    return res.status(500).json({ error: "Failed to update parent 2FA setting.", details: err?.message || null });
+  }
+});
+
+app.post("/admin/reset-student/:id", async (req, res) => {
+  try {
+    const studentId = normalize(req.params.id);
+    if (!studentId) {
+      return res.status(400).json({ error: "Student id is required" });
+    }
+
+    const { error } = await updateStudentById(studentId, {
+      ...buildStudentResetUpdates(),
+      face_url: "",
+      face_verified: false,
+      face_verified_at: null,
+      departure_request_id: null,
+      departure_request_status: null,
+    });
+
+    if (error) {
+      return res.status(500).json({
+        status: "ERROR",
+        message: "Failed to reset student",
+        details: error.message,
+      });
+    }
+
+    res.json({ status: "OK", message: "Student reset successfully" });
+  } catch (err) {
+    console.error("Reset student error:", err);
+    res.status(500).json({ error: "Failed to reset student" });
+  }
+});
+
+app.post("/reset", async (_req, res) => {
+  try {
+    const { error } = await dataStore
+      .from("students")
+      .update({
+        ...buildStudentResetUpdates(),
+        face_url: "",
+        face_verified: false,
+        face_verified_at: null,
+        departure_request_id: null,
+        departure_request_status: null,
+      })
+      .neq("id", "");
+
+    if (error) {
+      return res.status(500).json({ error: "Failed to reset students", details: error.message });
+    }
+
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("Reset error:", err);
+    return res.status(500).json({ error: "Failed to reset students", details: err?.message || null });
   }
 });
 
 app.get("/students/:id", async (req, res) => {
   try {
-    const { data, error } = await supabase
-      .from("students")
-      .select("*")
-      .eq("id", req.params.id)
-      .single();
+    const studentId = normalize(req.params.id);
+    const student = await getStudentById(studentId);
+    if (!student) {
+      return res.status(404).json({ error: "Student not found" });
+    }
 
-    if (error) throw error;
-
-    res.json(mergeFaceProfile(data));
+    res.json(student);
   } catch (err) {
     console.error("Fetch student error:", err);
     res.status(500).json({ error: "Failed to fetch student" });
   }
 });
 
-/*
------------------------------------
-RESET ENTIRE SYSTEM
------------------------------------
-*/
-app.post("/reset", async (req, res) => {
-  try {
-    const { error } = await supabase
-      .from("students")
-      .update({
-        status: "NOT_ARRIVED",
-        token: null,
-        pickup_pin: null,
-        pin_expires_at: null,
-        arrived_at: null,
-        departed_at: null,
-        verification_type: null,
-      })
-      .not("id", "is", null);
-
-    if (error) {
-      console.error("Reset error:", error);
-      return res.status(500).json({ error: error.message });
-    }
-
-    res.json({
-      message: "System reset successful",
-    });
-  } catch (err) {
-    console.error("Reset server error:", err);
-    res.status(500).json({ error: "Server error" });
-  }
-});
-
-// Keep API errors machine-readable for frontend handling.
 app.use((req, res) => {
   res.status(404).json({ error: `Route not found: ${req.method} ${req.path}` });
 });
 
-/*
------------------------------------
-START SERVER
------------------------------------
-*/
+async function startServer() {
+  try {
+    await ensureDefaultAdminAccount();
+  } catch (err) {
+    console.error("Failed to seed default admin account:", err);
+  }
 
-app.listen(PORT, "0.0.0.0", () => {
-  const ip = getLocalIP() || "localhost";
-  console.log(`🚀 Server running on 0.0.0.0:${PORT}`);
-  console.log(`🌐 Local Network URL: http://${ip}:${PORT}`);
-  console.log(`🏠 Loopback URL: http://localhost:${PORT}`);
-});
+  app.listen(PORT, "0.0.0.0", () => {
+    const ip = getLocalIP() || "localhost";
+    console.log(`Server running on http://0.0.0.0:${PORT}`);
+    console.log(`Local network URL: http://${ip}:${PORT}`);
+  });
+}
+
+void startServer();

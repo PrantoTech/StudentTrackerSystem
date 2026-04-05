@@ -34,7 +34,14 @@ function Dashboard() {
   const [pickupPinExpiresAt, setPickupPinExpiresAt] = useState(null)
   const [pinGenerating, setPinGenerating] = useState(false)
   const [faceProfileSaving, setFaceProfileSaving] = useState(false)
+  const [pendingDepartureRequest, setPendingDepartureRequest] = useState(null)
+  const [departureRequestBusy, setDepartureRequestBusy] = useState(false)
+  const loggedInParentId = user?.user_type === 'parent' ? user?.id || '' : ''
   const pinExpiryTimerRef = useRef(null)
+  const dashboardLabel = user?.user_type === 'student' ? 'Student Dashboard' : 'Parent Dashboard'
+  const noStudentMessage = user?.user_type === 'student'
+    ? 'This student account does not have an assigned profile.'
+    : 'No student is assigned to this parent account.'
 
   const resolveFaceUrl = (studentLike) => {
     const keys = [
@@ -112,6 +119,8 @@ function Dashboard() {
         setStudent({
           id: studentId,
           name: nextName,
+          parent_id: data?.parent_id ?? data?.student?.parent_id ?? null,
+          parent_name: data?.parent_name ?? data?.student?.parent_name ?? null,
           arrived_at: arrivedAt,
           departured_at: departedAt,
           face_url: faceUrl,
@@ -133,6 +142,15 @@ function Dashboard() {
         else if (nextStatus !== STATUS.ARRIVED) setToken('')
         if (nextStatus !== STATUS.ARRIVED) clearPickupPin()
       } catch (e) {
+        if (e?.status === 404) {
+          const message = 'Student profile not found. Please login again.'
+          alert(message)
+          setError(message)
+          logout()
+          navigate('/login', { replace: true })
+          return
+        }
+
         if (!silent) {
           const message = e?.message || 'Network error while fetching student.'
           alert(message)
@@ -142,7 +160,7 @@ function Dashboard() {
         if (!silent) setLoading(false)
       }
     },
-    [user, handleUnauthorized, clearPickupPin],
+    [user, handleUnauthorized, clearPickupPin, logout, navigate],
   )
 
   const runCheckInAfterGateQr = useCallback(async (sessionToken) => {
@@ -234,6 +252,80 @@ function Dashboard() {
     setScanning(false)
   }, [verifyingGate])
 
+  const fetchPendingDepartureRequest = useCallback(async () => {
+    const studentId = user?.student_id
+    if (!studentId) {
+      setPendingDepartureRequest(null)
+      return
+    }
+
+    try {
+      const data = await apiFetch(
+        `/parent/departure-request/${encodeURIComponent(studentId)}`,
+        {},
+        { onUnauthorized: handleUnauthorized },
+      )
+      if (data?.status === 'PENDING_PARENT_APPROVAL' && data?.request_id) {
+        setPendingDepartureRequest(data)
+      } else {
+        setPendingDepartureRequest(null)
+      }
+    } catch (e) {
+      if (e?.status !== 404) {
+        console.error('Failed to fetch pending departure request', e)
+      }
+      setPendingDepartureRequest(null)
+    }
+  }, [user?.student_id, handleUnauthorized])
+
+  const resolveDepartureRequest = useCallback(async (approved, parentId = '') => {
+    const studentId = user?.student_id
+    const requestId = pendingDepartureRequest?.request_id
+    const requiresParentId = Boolean(pendingDepartureRequest?.requires_parent_id)
+    if (!studentId || !requestId) return
+
+    if (approved && requiresParentId && !String(parentId || '').trim()) {
+      alert('Parent ID is required for departure approval.')
+      return
+    }
+
+    setDepartureRequestBusy(true)
+    setError('')
+    try {
+      await apiFetch(
+        '/parent/verify-departure',
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            student_id: studentId,
+            request_id: requestId,
+            approved,
+            parent_id: approved ? String(parentId || '').trim() : '',
+          }),
+        },
+        { onUnauthorized: handleUnauthorized },
+      )
+
+      setPendingDepartureRequest(null)
+      await fetchStudent(true)
+    } catch (e) {
+      const message =
+        e?.status === 401
+          ? 'Session expired. Please login again.'
+          : e?.message || 'Could not verify departure request.'
+      if (e?.status !== 401) alert(message)
+      setError(message)
+    } finally {
+      setDepartureRequestBusy(false)
+    }
+  }, [
+    user?.student_id,
+    pendingDepartureRequest?.request_id,
+    pendingDepartureRequest?.requires_parent_id,
+    handleUnauthorized,
+    fetchStudent,
+  ])
+
   const updateFaceProfile = useCallback(async ({ clear = false, imageUrl = '' } = {}) => {
     const studentId = user?.student_id
     if (!studentId) return
@@ -288,74 +380,6 @@ function Dashboard() {
     }
   }, [user?.student_id, fetchStudent, handleUnauthorized])
 
-  const pickImageAsDataUrl = () => new Promise((resolve, reject) => {
-    const input = document.createElement('input')
-    input.type = 'file'
-    input.accept = 'image/*'
-    input.onchange = () => {
-      const file = input.files?.[0]
-      if (!file) {
-        resolve(null)
-        return
-      }
-      const reader = new FileReader()
-      reader.onload = () => resolve(typeof reader.result === 'string' ? reader.result : null)
-      reader.onerror = () => reject(new Error('Could not read selected image file.'))
-      reader.readAsDataURL(file)
-    }
-    input.click()
-  })
-
-  const compressDataUrlImage = (inputDataUrl) => new Promise((resolve, reject) => {
-    const image = new Image()
-    image.onload = () => {
-      try {
-        const maxSide = 720
-        const scale = Math.min(1, maxSide / Math.max(image.width, image.height))
-        const width = Math.max(1, Math.round(image.width * scale))
-        const height = Math.max(1, Math.round(image.height * scale))
-
-        const canvas = document.createElement('canvas')
-        canvas.width = width
-        canvas.height = height
-        const context = canvas.getContext('2d')
-        if (!context) {
-          reject(new Error('Could not process selected image.'))
-          return
-        }
-
-        context.drawImage(image, 0, 0, width, height)
-        const compressed = canvas.toDataURL('image/jpeg', 0.72)
-        resolve(compressed)
-      } catch {
-        reject(new Error('Could not process selected image.'))
-      }
-    }
-    image.onerror = () => reject(new Error('Invalid image file.'))
-    image.src = inputDataUrl
-  })
-
-  const handleSetFaceProfile = useCallback(() => {
-    void (async () => {
-      try {
-        const imageDataUrl = await pickImageAsDataUrl()
-        if (!imageDataUrl) return
-        const compressed = await compressDataUrlImage(imageDataUrl)
-        if (typeof compressed !== 'string' || !compressed.trim()) {
-          alert('Could not process selected image.')
-          return
-        }
-        void updateFaceProfile({ clear: false, imageUrl: compressed })
-      } catch (e) {
-        alert(e?.message || 'Could not process selected image.')
-      }
-    })()
-  }, [updateFaceProfile])
-
-  const handleClearFaceProfile = useCallback(() => {
-    void updateFaceProfile({ clear: true })
-  }, [updateFaceProfile])
-
   const handleLogout = () => {
     logout()
     navigate('/login', { replace: true })
@@ -373,6 +397,18 @@ function Dashboard() {
     hasFetchedRef.current = true
     fetchStudent(false)
   }, [user, fetchStudent])
+
+  useEffect(() => {
+    if (!user?.student_id) return undefined
+    if (status !== STATUS.ARRIVED) {
+      setPendingDepartureRequest(null)
+      return undefined
+    }
+
+    fetchPendingDepartureRequest()
+    const interval = window.setInterval(fetchPendingDepartureRequest, 4000)
+    return () => window.clearInterval(interval)
+  }, [user?.student_id, status, fetchPendingDepartureRequest])
 
   // Clear PIN display when backend says it has expired (no polling — single timeout).
   useEffect(() => {
@@ -398,7 +434,7 @@ function Dashboard() {
   return (
     <main className="app-shell">
       <section className="app-card">
-        <h1>Parent Dashboard</h1>
+        <h1>{dashboardLabel}</h1>
 
         {loading ? (
           <div className="loading-row" aria-live="polite">
@@ -409,11 +445,12 @@ function Dashboard() {
 
         {!user?.student_id ? (
           <p className="error-text" role="alert">
-            No student is assigned to this parent account.
+            {noStudentMessage}
           </p>
         ) : student ? (
           <ParentDashboardView
             selectedStudent={student}
+            accountType={user?.user_type}
             status={status}
             token={token}
             scanning={scanning}
@@ -429,14 +466,17 @@ function Dashboard() {
             pickupPin={pickupPin}
             pinGenerating={pinGenerating}
             onGeneratePickupPin={generatePickupPin}
-            faceProfileSaving={faceProfileSaving}
-            faceProfileRegistered={Boolean(student?.face_url || student?.face_verified)}
             faceProfileVerified={Boolean(student?.face_verified)}
-            onSetFaceProfile={handleSetFaceProfile}
-            onClearFaceProfile={handleClearFaceProfile}
+            pendingDepartureRequest={pendingDepartureRequest}
+            departureRequestBusy={departureRequestBusy}
+            loggedInParentId={loggedInParentId}
+            onApproveDepartureRequest={(parentId) => resolveDepartureRequest(true, parentId)}
+            onRejectDepartureRequest={() => resolveDepartureRequest(false)}
           />
+        ) : error ? (
+          <p className="error-text" role="alert">{error}</p>
         ) : (
-          <p className="hint">Loading student…</p>
+          <p className="hint">Student data is not available right now. Please refresh or login again.</p>
         )}
       </section>
     </main>

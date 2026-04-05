@@ -3,6 +3,34 @@ import { useNavigate } from 'react-router-dom'
 import { apiFetch } from './api.js'
 import { useAuth } from './auth/AuthContext.jsx'
 
+const REGISTER_TYPES = {
+  family: {
+    label: 'Family',
+    fields: [
+      { key: 'parentName', label: 'Parent Name', type: 'text', placeholder: 'Enter parent name' },
+      { key: 'parentId', label: 'Parent ID', type: 'text', placeholder: 'PRT-001' },
+      { key: 'parentEmail', label: 'Parent Email', type: 'email', placeholder: 'parent@example.com' },
+      { key: 'parentPassword', label: 'Parent Password', type: 'password', placeholder: 'Minimum 6 characters' },
+      { key: 'studentName', label: 'Student Name', type: 'text', placeholder: 'Enter student name' },
+      { key: 'studentId', label: 'Student ID', type: 'text', placeholder: 'STU-001' },
+      { key: 'cardId', label: 'Card ID', type: 'text', placeholder: 'CARD-123' },
+    ],
+  },
+}
+
+const DEFAULT_REGISTER_FORM = {
+  email: '',
+  password: '',
+  id: '',
+  parentName: '',
+  parentId: '',
+  parentEmail: '',
+  parentPassword: '',
+  studentName: '',
+  studentId: '',
+  cardId: '',
+}
+
 function Login() {
   const navigate = useNavigate()
   const { user, login } = useAuth()
@@ -18,6 +46,12 @@ function Login() {
   const [forgotLoading, setForgotLoading] = useState(false)
   const [forgotMessage, setForgotMessage] = useState('')
   const [forgotError, setForgotError] = useState('')
+  const [registerOpen, setRegisterOpen] = useState(false)
+  const [registerType] = useState('family')
+  const [registerForm, setRegisterForm] = useState(DEFAULT_REGISTER_FORM)
+  const [registerLoading, setRegisterLoading] = useState(false)
+  const [registerMessage, setRegisterMessage] = useState('')
+  const [registerError, setRegisterError] = useState('')
 
   // If user is already logged in, route them to their role home.
   useEffect(() => {
@@ -103,6 +137,75 @@ function Login() {
     }
   }
 
+  const onRegisterFieldChange = (key, value) => {
+    setRegisterForm((prev) => ({ ...prev, [key]: value }))
+  }
+
+  const buildRegisterPayload = () => {
+    return {
+      user_type: 'family',
+      parent_name: registerForm.parentName.trim(),
+      parent_id: registerForm.parentId.trim(),
+      parent_email: registerForm.parentEmail.trim().toLowerCase(),
+      parent_password: registerForm.parentPassword,
+      student_name: registerForm.studentName.trim(),
+      student_id: registerForm.studentId.trim(),
+      card_id: registerForm.cardId.trim(),
+    }
+  }
+
+  const validateRegisterPayload = (payload) => {
+    const missing = Object.entries(payload)
+      .filter(([, value]) => !String(value ?? '').trim())
+      .map(([key]) => key)
+
+    if (missing.length > 0) {
+      return 'Please fill in all required fields.'
+    }
+
+    if (String(payload.parent_password).length < 6) {
+      return 'Password must be at least 6 characters.'
+    }
+
+    return ''
+  }
+
+  const onRegisterSubmit = async (event) => {
+    event.preventDefault()
+    setRegisterError('')
+    setRegisterMessage('')
+
+    const payload = buildRegisterPayload()
+    const validationError = validateRegisterPayload(payload)
+    if (validationError) {
+      setRegisterError(validationError)
+      return
+    }
+
+    setRegisterLoading(true)
+    try {
+      await apiFetch('/register', {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      })
+
+      setRegisterMessage('Registration successful. You can now login with your account.')
+      setEmail(payload.parent_email)
+      setPassword('')
+      setRegisterForm(DEFAULT_REGISTER_FORM)
+    } catch (e) {
+      if (e?.status === 400) {
+        setRegisterError(e?.message || 'Invalid registration details.')
+      } else if (e?.status === 409) {
+        setRegisterError('Account already exists with these details.')
+      } else {
+        setRegisterError('Could not register account. Please try again.')
+      }
+    } finally {
+      setRegisterLoading(false)
+    }
+  }
+
   return (
     <main className="app-shell">
       <section className="app-card">
@@ -140,20 +243,34 @@ function Login() {
             {loading ? 'Logging in…' : 'Login'}
           </button>
 
-          <button
-            type="button"
-            className="link-btn"
-            onClick={() => {
-              setForgotOpen((prev) => !prev)
-              setForgotError('')
-              setForgotMessage('')
-              if (!forgotOpen) {
-                setForgotEmail(email)
-              }
-            }}
-          >
-            {forgotOpen ? 'Hide forgot password' : 'Forgot password?'}
-          </button>
+          <div className="form-meta-row">
+            <button
+              type="button"
+              className="link-btn"
+              onClick={() => {
+                setForgotOpen((prev) => !prev)
+                setForgotError('')
+                setForgotMessage('')
+                if (!forgotOpen) {
+                  setForgotEmail(email)
+                }
+              }}
+            >
+              {forgotOpen ? 'Hide forgot password' : 'Forgot password?'}
+            </button>
+
+            <button
+              type="button"
+              className="link-btn"
+              onClick={() => {
+                setRegisterOpen((prev) => !prev)
+                setRegisterError('')
+                setRegisterMessage('')
+              }}
+            >
+              {registerOpen ? 'Hide registration' : 'New here?'}
+            </button>
+          </div>
         </form>
 
         {forgotOpen ? (
@@ -210,6 +327,40 @@ function Login() {
             ) : null}
 
             {forgotMessage ? <p className="success-banner">{forgotMessage}</p> : null}
+          </form>
+        ) : null}
+
+        {registerOpen ? (
+          <form className="form register-form" onSubmit={onRegisterSubmit}>
+            <h2 className="forgot-title">Family Registration</h2>
+            <p className="hint">Create a linked parent and student profile in one step.</p>
+
+            {REGISTER_TYPES[registerType].fields.map((field) => (
+              <label className="field" key={field.key}>
+                <span className="field-label">{field.label}</span>
+                <input
+                  className="input"
+                  type={field.type}
+                  value={registerForm[field.key]}
+                  onChange={(e) => onRegisterFieldChange(field.key, e.target.value)}
+                  placeholder={field.placeholder}
+                  autoComplete={field.type === 'password' ? 'new-password' : 'off'}
+                  required
+                />
+              </label>
+            ))}
+
+            <button className="secondary-btn" type="submit" disabled={registerLoading}>
+              {registerLoading ? 'Creating family…' : `Register ${REGISTER_TYPES[registerType].label}`}
+            </button>
+
+            {registerError ? (
+              <p className="error-text" role="alert">
+                {registerError}
+              </p>
+            ) : null}
+
+            {registerMessage ? <p className="success-banner">{registerMessage}</p> : null}
           </form>
         ) : null}
 

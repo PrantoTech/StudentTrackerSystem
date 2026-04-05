@@ -6,6 +6,8 @@ import { LogOut, RotateCcw } from 'lucide-react'
 interface Student {
   id: string
   name: string
+  parent_id?: string | null
+  parent_name?: string | null
   status: 'NOT_ARRIVED' | 'ARRIVED' | 'DEPARTED'
   arrived_at?: string | null
   departed_at?: string | null
@@ -30,17 +32,18 @@ interface Student {
   faceVerifiedAt?: string | null
   face_profile_verified_at?: string | null
   faceProfileVerifiedAt?: string | null
+  parent_2fa_enabled?: boolean | null
+  parentId2faEnabled?: boolean | null
 }
 
 interface StudentTableProps {
   students: Student[]
   onForceDepart: (studentId: string) => void
   onReset: (studentId: string) => void
-  onSetFaceProfile: (student: Student) => void
-  onClearFaceProfile: (studentId: string) => void
+  onToggleParent2fa: (studentId: string, enabled: boolean) => void
   forceDepartLoadingId: string | null
   resetStudentLoadingId: string | null
-  faceProfileLoadingId: string | null
+  toggleParent2faLoadingId: string | null
   pageSize?: number
 }
 
@@ -61,11 +64,10 @@ export function StudentTable({
   students,
   onForceDepart,
   onReset,
-  onSetFaceProfile,
-  onClearFaceProfile,
+  onToggleParent2fa,
   forceDepartLoadingId,
   resetStudentLoadingId,
-  faceProfileLoadingId,
+  toggleParent2faLoadingId,
   pageSize = 8,
 }: StudentTableProps) {
   const [page, setPage] = useState(1)
@@ -99,39 +101,6 @@ export function StudentTable({
     return 'Unknown'
   }
 
-  const isFaceProfileVerified = (student: Student) => {
-    return Boolean(
-      student.face_verified ||
-      student.faceVerified ||
-      student.is_face_verified ||
-      student.isFaceVerified ||
-      student.face_verified_at ||
-      student.faceVerifiedAt ||
-      student.face_profile_verified_at ||
-      student.faceProfileVerifiedAt
-    )
-  }
-
-  const getFaceProfileUrl = (student: Student) => {
-    const keys: Array<keyof Student> = [
-      'face_image_url',
-      'face_url',
-      'faceImageUrl',
-      'face_photo_url',
-      'photo_url',
-      'profile_image_url',
-      'avatar_url',
-      'image_url',
-      'photo',
-      'image',
-    ]
-    for (const key of keys) {
-      const value = student[key]
-      if (typeof value === 'string' && value.trim() !== '') return value.trim()
-    }
-    return ''
-  }
-
   return (
     <div>
       <div className="table-wrapper">
@@ -139,11 +108,13 @@ export function StudentTable({
           <thead>
             <tr>
               <th>Name</th>
+              <th>Student ID</th>
+              <th>Parent ID</th>
               <th>Status</th>
               <th>Arrival Time</th>
               <th>Departure Time</th>
               <th>Verification Type</th>
-              <th>Face Profile</th>
+              <th>Parent ID 2FA</th>
               <th>Actions</th>
             </tr>
           </thead>
@@ -151,6 +122,8 @@ export function StudentTable({
             {pageStudents.map((student) => (
               <tr key={student.id}>
                 <td className="admin-student-name">{student.name}</td>
+                <td>{student.id}</td>
+                <td>{student.parent_id || '-'}</td>
                 <td>
                   <span className={`admin-badge ${statusBadgeConfig[student.status].className}`}>
                     {statusBadgeConfig[student.status].label}
@@ -170,41 +143,22 @@ export function StudentTable({
                 </td>
                 <td>
                   {(() => {
-                    const faceUrl = getFaceProfileUrl(student)
-                    const verified = isFaceProfileVerified(student)
+                    const isEnabled = Boolean(student.parent_2fa_enabled ?? student.parentId2faEnabled)
+                    const isBusy = toggleParent2faLoadingId === student.id
                     return (
-                      <span className={`admin-badge ${verified ? 'badge-arrived' : faceUrl ? 'badge-pin' : 'badge-not_arrived'}`}>
-                        {verified ? 'Verified' : faceUrl ? 'Registered' : 'Missing'}
-                      </span>
+                      <button
+                        className={isEnabled ? 'btn-depart' : 'btn-reset'}
+                        onClick={() => onToggleParent2fa(student.id, !isEnabled)}
+                        disabled={isBusy || forceDepartLoadingId === student.id || resetStudentLoadingId === student.id}
+                        title={isEnabled ? 'Disable parent ID 2FA for departure' : 'Enable parent ID 2FA for departure'}
+                      >
+                        {isBusy ? 'Working…' : isEnabled ? 'Disable 2FA' : 'Enable 2FA'}
+                      </button>
                     )
                   })()}
-                </td>
-                <td>
+              </td>
+              <td>
                   <div className="admin-tbl-actions">
-                    <button
-                      className="btn-reset"
-                      onClick={() => onSetFaceProfile(student)}
-                      title="Set Face Profile"
-                      disabled={
-                        faceProfileLoadingId === student.id ||
-                        forceDepartLoadingId === student.id ||
-                        resetStudentLoadingId === student.id
-                      }
-                    >
-                      {faceProfileLoadingId === student.id ? 'Working…' : 'Upload Face'}
-                    </button>
-                    <button
-                      className="btn-reset"
-                      onClick={() => onClearFaceProfile(student.id)}
-                      title="Clear Face Profile"
-                      disabled={
-                        faceProfileLoadingId === student.id ||
-                        forceDepartLoadingId === student.id ||
-                        resetStudentLoadingId === student.id
-                      }
-                    >
-                      {faceProfileLoadingId === student.id ? 'Working…' : 'Clear Face'}
-                    </button>
                     <button
                       className="btn-depart"
                       onClick={() => onForceDepart(student.id)}
@@ -217,11 +171,15 @@ export function StudentTable({
                     <button
                       className="btn-reset"
                       onClick={() => onReset(student.id)}
-                      title="Reset"
+                      title={student.status === 'DEPARTED' ? 'Start new arrival/departure cycle' : 'Reset student'}
                       disabled={forceDepartLoadingId === student.id || resetStudentLoadingId === student.id}
                     >
                       <RotateCcw size={14} />
-                      {resetStudentLoadingId === student.id ? 'Working…' : 'Reset'}
+                      {resetStudentLoadingId === student.id
+                        ? 'Working…'
+                        : student.status === 'DEPARTED'
+                          ? 'New Cycle'
+                          : 'Reset'}
                     </button>
                   </div>
                 </td>
@@ -229,7 +187,7 @@ export function StudentTable({
             ))}
             {students.length === 0 && (
               <tr>
-                <td colSpan={7} style={{ textAlign: 'center', color: '#6b7280' }}>
+                <td colSpan={9} style={{ textAlign: 'center', color: '#6b7280' }}>
                   No students found matching current filters.
                 </td>
               </tr>

@@ -11,9 +11,9 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
-    "@supabase/supabase-js": "^2.100.0",
     "cors": "^2.8.6",
     "express": "^5.2.1",
+    "mongodb": "^6.17.0",
     "uuid": "^13.0.0"
   }
 }

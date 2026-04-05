@@ -21,8 +21,7 @@ function playTone(type) {
 }
 
 /**
- * Full-screen kiosk feedback for arrival check-in or departure verification.
- * flow: ARRIVAL → check-in copy; DEPARTURE → verified / invalid pickup copy.
+ * Full-screen kiosk feedback for RFID arrival/departure verification.
  */
 function ResultScreen({ result }) {
   useEffect(() => {
@@ -30,8 +29,8 @@ function ResultScreen({ result }) {
   }, [result.type]);
 
   const isArrival = result.flow === "ARRIVAL";
+  const isPendingApproval = result.flow === "PENDING_APPROVAL";
   const isSuccess = result.type === "success";
-  const isDeparturePin = result.flow === "DEPARTURE" && result.viaPin;
 
   return (
     <section className={`result-screen ${result.type}`}>
@@ -43,41 +42,31 @@ function ResultScreen({ result }) {
         {isSuccess ? (
           isArrival ? (
             <>
-              <p className="section-pill success">Check-in complete</p>
-              <h1 className="result-title">Student Checked In</h1>
+              <p className="section-pill success">Scan successful</p>
+              <h1 className="result-title">Student Arrived</h1>
               <p className="result-message">{result.studentName}</p>
+              {result.message ? <p className="result-subline">{result.message}</p> : null}
             </>
-          ) : isDeparturePin ? (
+          ) : isPendingApproval ? (
             <>
-              <p className="section-pill success">Pickup verified</p>
-              <h1 className="result-title">Verified</h1>
-              <p className="result-message">Student departed</p>
-              {result.studentName ? (
-                <p className="result-subline">{result.studentName}</p>
-              ) : null}
+              <p className="section-pill success">Scan successful</p>
+              <h1 className="result-title">Parent Approval Required</h1>
+              <p className="result-message">{result.studentName}</p>
+              {result.message ? <p className="result-subline">{result.message}</p> : null}
             </>
           ) : (
             <>
-              <p className="section-pill success">Pickup verified</p>
-              <h1 className="result-title">Verified</h1>
-              <p className="result-message">
-                {result.studentName} has departed
-              </p>
+              <p className="section-pill success">Scan successful</p>
+              <h1 className="result-title">Student Departed</h1>
+              <p className="result-message">{result.studentName}</p>
+              {result.message ? <p className="result-subline">{result.message}</p> : null}
             </>
           )
         ) : (
           <>
-            <p className="section-pill error">Verification failed</p>
-            {isDeparturePin ? (
-              <h1 className="result-title">{result.message || "Invalid PIN"}</h1>
-            ) : (
-              <>
-                <h1 className="result-title">Invalid QR</h1>
-                <p className="result-message">
-                  {result.message || "QR invalid or already used"}
-                </p>
-              </>
-            )}
+            <p className="section-pill error">Tap failed</p>
+            <h1 className="result-title">Could Not Process Card</h1>
+            <p className="result-message">{result.message || "Please try again"}</p>
           </>
         )}
       </div>
